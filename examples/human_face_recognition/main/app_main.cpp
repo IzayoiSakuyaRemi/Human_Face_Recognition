@@ -70,7 +70,7 @@ static void voice_recognition_task(void *arg)
             }
             xSemaphoreGive(g_espdl_mutex);
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(1);  // 1ms 让步，保证摄像头帧提取不饿死
     }
     free(buffer);
     vTaskDelete(NULL);
