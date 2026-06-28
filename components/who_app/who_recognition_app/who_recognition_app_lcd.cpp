@@ -3,6 +3,7 @@
 #include "who_lvgl_utils.hpp"
 #include "who_yield2idle.hpp"
 LV_FONT_DECLARE(montserrat_bold_26);
+LV_FONT_DECLARE(montserrat_bold_20);
 
 namespace who {
 namespace app {
@@ -30,6 +31,11 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     m_label = create_lvgl_label("", &montserrat_bold_26);
     const lv_font_t *font = lv_obj_get_style_text_font(m_label, LV_PART_MAIN);
     lv_obj_align(m_label, LV_ALIGN_TOP_MID, 0, font->line_height);
+
+    // 状态标签 — 左上角，用于显示语音指令状态
+    // 注意: montserrat 西文字体不支持中文，需后续嵌入中文字库
+    m_status_label = create_lvgl_label("Cmd: Open Door", &montserrat_bold_20, {255, 255, 255});
+    lv_obj_align(m_status_label, LV_ALIGN_TOP_LEFT, 10, 10);
     bsp_display_unlock();
 
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -67,6 +73,7 @@ WhoRecognitionAppLCD::~WhoRecognitionAppLCD()
     delete m_text_result_lcd_disp;
     delete m_detect_result_lcd_disp;
     bsp_display_lock(0);
+    lv_obj_del(m_status_label);
     lv_obj_del(m_label);
     bsp_display_unlock();
 }
@@ -107,6 +114,13 @@ void app::WhoRecognitionAppLCD::recognition_cleanup()
 void app::WhoRecognitionAppLCD::detect_cleanup()
 {
     m_detect_result_lcd_disp->cleanup();
+}
+
+void WhoRecognitionAppLCD::set_status_text(const char *text)
+{
+    bsp_display_lock(0);
+    lv_label_set_text(m_status_label, text);
+    bsp_display_unlock();
 }
 } // namespace app
 } // namespace who
