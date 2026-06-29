@@ -2,6 +2,9 @@
 #include "human_face_detect.hpp"
 #include "who_lvgl_utils.hpp"
 #include "who_yield2idle.hpp"
+
+extern EventGroupHandle_t g_recog_event_group;
+
 LV_FONT_DECLARE(montserrat_bold_26);
 LV_FONT_DECLARE(montserrat_bold_20);
 
@@ -60,6 +63,8 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
         new lcd_disp::WhoDetectResultLCDDisp(detect_task, m_lcd_disp->get_canvas(), {{255, 0, 0}});
     recognition_task->set_recognition_result_cb(
         std::bind(&WhoRecognitionAppLCD::recognition_result_cb, this, std::placeholders::_1));
+    g_recog_event_group = recognition_task->get_event_group();
+
     recognition_task->set_detect_result_cb(
         std::bind(&WhoRecognitionAppLCD::detect_result_cb, this, std::placeholders::_1));
     recognition_task->set_cleanup_func(std::bind(&WhoRecognitionAppLCD::recognition_cleanup, this));

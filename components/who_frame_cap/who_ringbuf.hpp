@@ -17,7 +17,8 @@ public:
     void push(const T &value)
     {
         if (m_count == m_capacity) {
-            ESP_LOGE("RingBuf", "RingBuf is full.");
+            ESP_LOGE("RingBuf", "RingBuf is full — dropping oldest.");
+            pop();
         }
         m_buffer[(m_head + m_count) % m_capacity] = value;
         m_count++;

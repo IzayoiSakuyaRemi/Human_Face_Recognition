@@ -16,8 +16,10 @@
 
 static const char *TAG = "app_main";
 static who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
+EventGroupHandle_t g_recog_event_group = nullptr;  // 由 who_recognition_app_lcd 设置
 static esp_codec_dev_handle_t g_mic_handle = nullptr;
 static SemaphoreHandle_t g_espdl_mutex = nullptr;
+static volatile int g_skip_detect_count = 0;  // 识别期间跳过语音 detect 的剩余次数
 
 using namespace who::frame_cap;
 using namespace who::app;
@@ -54,7 +56,9 @@ static void voice_recognition_task(void *arg)
             read_count = 0;
             last_log = now;
         }
-        if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(100))) {
+        if (g_skip_detect_count > 0) {
+            g_skip_detect_count--;
+        } else if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(100))) {
             esp_mn_state_t state = multinet->detect(mn_data, buffer);
             if (state == ESP_MN_STATE_DETECTED) {
                 esp_mn_results_t *r = multinet->get_results(mn_data);
@@ -64,13 +68,20 @@ static void voice_recognition_task(void *arg)
                     case 2: cmd = "Cmd: Close TV"; break;
                     case 3: cmd = "Cmd: Open Door"; break;
                     case 4: cmd = "Cmd: Close Door"; break;
+                    case 5:
+                        cmd = "Recog: Face";
+                        if (g_recog_event_group) {
+                            g_skip_detect_count = 100;  // 跳过 ~3 秒，足够识别完成
+                            xEventGroupSetBits(g_recog_event_group, 32);
+                        }
+                        break;
                 }
                 ESP_LOGI(TAG, "Detected: %s", cmd);
                 if (g_recognition_app) g_recognition_app->set_status_text(cmd);
             }
             xSemaphoreGive(g_espdl_mutex);
         }
-        vTaskDelay(1);  // 1ms 让步，保证摄像头帧提取不饿死
+        taskYIELD();  // 微秒级让步 WhoFetchNode，防帧缓冲饿死
     }
     free(buffer);
     vTaskDelete(NULL);
@@ -148,6 +159,7 @@ extern "C" void app_main(void)
                 esp_mn_commands_add(2, "guan bi dian shi");
                 esp_mn_commands_add(3, "da kai men");
                 esp_mn_commands_add(4, "guan bi men");
+                esp_mn_commands_add(5, "shi bie ren lian");
                 esp_mn_commands_update();
                 voice_params.chunksize = voice_params.multinet->get_samp_chunksize(voice_params.mn_data);
             }
