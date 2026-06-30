@@ -15,6 +15,9 @@
 #include <algorithm>
 #include <cstdlib>
 
+// Global: last known IP string for app_main to read
+char g_wifi_ip[32] = {0};
+
 static const char *TAG = "wifi_prov";
 
 // NVS keys
@@ -115,6 +118,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     } else if (base == IP_EVENT) {
         if (id == IP_EVENT_STA_GOT_IP) {
             ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
+            snprintf(g_wifi_ip, sizeof(g_wifi_ip), "WiFi: " IPSTR, IP2STR(&ev->ip_info.ip));
             ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
             if (!s_ap_mode) xEventGroupSetBits(s_evt, BIT_CONNECTED);
         }

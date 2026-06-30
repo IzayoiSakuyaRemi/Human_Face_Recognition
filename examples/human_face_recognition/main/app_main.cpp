@@ -3,6 +3,7 @@
 #include "who_recognition_app_term.hpp"
 #include "who_spiflash_fatfs.hpp"
 #include "wifi_provisioning.hpp"
+#include "event_reporter.hpp"
 #include "driver/gpio.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
@@ -13,12 +14,14 @@
 #include "esp_mn_speech_commands.h"
 #include "model_path.h"
 #include "esp_task_wdt.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include <cstring>
 
 extern char g_last_recog_face[64];
+extern char g_wifi_ip[32];
 
 static const char *TAG = "app_main";
 
@@ -80,12 +83,13 @@ static void voice_recognition_task(void *arg)
                 esp_mn_results_t *r = multinet->get_results(mn_data);
                 const char *cmd = "Cmd: Unknown";
                 switch (r->command_id[0]) {
-                    case 1: cmd = "Cmd: Open TV"; break;
-                    case 2: cmd = "Cmd: Close TV"; break;
-                    case 3: cmd = "Cmd: Open Door"; break;
-                    case 4: cmd = "Cmd: Close Door"; break;
+                    case 1: cmd = "Cmd: Open TV"; report_event("voice_command", "\"cmd\":\"Open TV\""); break;
+                    case 2: cmd = "Cmd: Close TV"; report_event("voice_command", "\"cmd\":\"Close TV\""); break;
+                    case 3: cmd = "Cmd: Open Door"; report_event("voice_command", "\"cmd\":\"Open Door\""); break;
+                    case 4: cmd = "Cmd: Close Door"; report_event("voice_command", "\"cmd\":\"Close Door\""); break;
                     case 5:
                         cmd = "Recog: Face";
+                        report_event("face_recognized", "\"action\":\"trigger\"");
                         if (g_recog_event_group) {
                             g_skip_detect_count = 100;
                             xEventGroupSetBits(g_recog_event_group, 32);
@@ -200,10 +204,20 @@ extern "C" void app_main(void)
     auto recognition_app = new WhoRecognitionAppLCD(frame_cap);
     g_recognition_app = recognition_app;
 
-    // Show WiFi result on the now-initialized display
-    recognition_app->set_status_text(g_wifi_status);
+    // WiFi status in top-right corner (shows IP if available)
+    recognition_app->set_wifi_text(g_wifi_ip[0] ? g_wifi_ip : g_wifi_status);
 
     g_espdl_mutex = xSemaphoreCreateMutex();
+
+    // Heartbeat timer: report online every 60s
+    esp_timer_handle_t hb_timer = nullptr;
+    esp_timer_create_args_t hb_args = {
+        .callback = [](void*) { report_event("heartbeat", "\"uptime\":0"); },
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "heartbeat"
+    };
+    esp_timer_create(&hb_args, &hb_timer);
+    esp_timer_start_periodic(hb_timer, 60000000);  // 60s
 
     if (voice_params.multinet) {
         voice_task_params_t *p = (voice_task_params_t *)malloc(sizeof(voice_task_params_t));

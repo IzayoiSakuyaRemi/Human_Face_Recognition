@@ -44,6 +44,10 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     // 执行许可标签 — 状态标签下方
     m_exec_label = create_lvgl_label("", &montserrat_bold_20, {0, 255, 0});
     lv_obj_align(m_exec_label, LV_ALIGN_TOP_LEFT, 10, 40);
+
+    // WiFi 状态标签 — 状态标签下方
+    m_wifi_label = create_lvgl_label("WiFi: OK", &montserrat_bold_20, {0, 255, 0});
+    lv_obj_align(m_wifi_label, LV_ALIGN_TOP_LEFT, 10, 70);
     bsp_display_unlock();
 
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -84,6 +88,7 @@ WhoRecognitionAppLCD::~WhoRecognitionAppLCD()
     delete m_detect_result_lcd_disp;
     bsp_display_lock(0);
     lv_obj_del(m_exec_label);
+    lv_obj_del(m_wifi_label);
     lv_obj_del(m_status_label);
     lv_obj_del(m_label);
     bsp_display_unlock();
@@ -139,6 +144,13 @@ void WhoRecognitionAppLCD::set_exec_text(const char *text)
 {
     bsp_display_lock(0);
     lv_label_set_text(m_exec_label, text);
+    bsp_display_unlock();
+}
+
+void WhoRecognitionAppLCD::set_wifi_text(const char *text)
+{
+    bsp_display_lock(0);
+    lv_label_set_text(m_wifi_label, text);
     bsp_display_unlock();
 }
 } // namespace app

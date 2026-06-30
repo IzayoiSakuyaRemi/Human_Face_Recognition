@@ -8,6 +8,7 @@ set(requires who_spiflash_fatfs
              esp_wifi_remote
              nvs_flash
              esp_http_server
+             esp_http_client
              esp_lvgl_port
              esp_netif)
 
