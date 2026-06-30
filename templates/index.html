@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32-P4 人脸识别看板</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4eb;
+    --muted: #8b8fa3;
+    --accent: #4fc3f7;
+    --green: #66bb6a;
+    --red: #ef5350;
+    --amber: #ffa726;
+    --tag-face: #42a5f5;
+    --tag-voice: #ab47bc;
+    --tag-heart: #66bb6a;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, "SF Mono", "JetBrains Mono", monospace;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding: 24px;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+
+  /* Header */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .header h1 {
+    font-size: 20px; font-weight: 600; letter-spacing: -0.5px;
+  }
+  .status {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px; border-radius: 20px;
+    font-size: 13px; font-weight: 500;
+  }
+  .status.online { background: rgba(102,187,106,0.12); color: var(--green); }
+  .status.offline { background: rgba(239,83,80,0.12); color: var(--red); }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Stats */
+  .stats {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 18px;
+  }
+  .stat-card .label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; }
+
+  /* Table */
+  .table-wrap {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+  }
+  table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  thead th {
+    text-align: left; padding: 10px 16px;
+    font-weight: 500; color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  tbody td {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: rgba(255,255,255,0.03); }
+
+  .tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  }
+  .tag.face_recognized,
+  .tag.face_recognize  { background: rgba(66,165,245,0.15); color: var(--tag-face); }
+  .tag.voice_command   { background: rgba(171,71,188,0.15); color: var(--tag-voice); }
+  .tag.heartbeat       { background: rgba(102,187,106,0.15); color: var(--tag-heart); }
+
+  .detail-cell {
+    max-width: 360px; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis;
+    color: var(--muted); font-size: 12px;
+  }
+  .time-cell { white-space: nowrap; color: var(--muted); font-size: 12px; }
+
+  .empty { text-align: center; padding: 40px; color: var(--muted); }
+
+  .refresh-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px; font-size: 12px; color: var(--muted);
+  }
+  .refresh-bar .countdown { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>ESP32-P4 看板</h1>
+    <div class="status" id="status">
+      <span class="dot"></span>
+      <span id="status-text">检测中…</span>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="label">人脸识别</div>
+      <div class="value" style="color:var(--tag-face)" id="cnt-face">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">语音命令</div>
+      <div class="value" style="color:var(--tag-voice)" id="cnt-voice">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">心跳</div>
+      <div class="value" style="color:var(--tag-heart)" id="cnt-heart">0</div>
+    </div>
+  </div>
+
+  <div class="refresh-bar">
+    <span>最近事件</span>
+    <span>刷新倒计时 <span class="countdown" id="countdown">3</span>s</span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:140px">类型</th>
+          <th>详情</th>
+          <th style="width:180px">时间</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr class="empty"><td colspan="3">暂无数据</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const API_EVENTS = '/api/events?limit=20';
+const API_STATUS = '/api/status';
+const REFRESH = 3;
+let countdown = REFRESH;
+
+function formatTime(ts) {
+  if (!ts) return '-';
+  // SQLite 返回的是 "YYYY-MM-DD HH:MM:SS"（UTC），转本地时间展示
+  const d = new Date(ts.replace(' ', 'T') + 'Z');
+  if (isNaN(d.getTime())) return ts;
+  return d.toLocaleString('zh-CN', { hour12: false });
+}
+
+function tagHtml(type) {
+  const labels = {
+    face_recognized: '人脸识别',
+    face_recognize: '人脸识别',
+    voice_command: '语音命令',
+    heartbeat: '心跳',
+  };
+  return `<span class="tag ${type}">${labels[type] || type}</span>`;
+}
+
+async function fetchStatus() {
+  try {
+    const r = await fetch(API_STATUS);
+    const d = await r.json();
+    const el = document.getElementById('status');
+    const txt = document.getElementById('status-text');
+    el.className = 'status ' + (d.online ? 'online' : 'offline');
+    txt.textContent = d.online ? '设备在线' : '设备离线';
+  } catch (e) { /* ignore */ }
+}
+
+async function fetchEvents() {
+  try {
+    const r = await fetch(API_EVENTS);
+    const data = await r.json();
+    const events = data.events || [];
+    renderTable(events);
+    renderStats(events);
+  } catch (e) { /* ignore */ }
+  countdown = REFRESH;
+  document.getElementById('countdown').textContent = countdown;
+}
+
+function renderStats(events) {
+  let face = 0, voice = 0, heart = 0;
+  for (const e of events) {
+    if (e.event_type === 'face_recognized') face++;
+    else if (e.event_type === 'voice_command') voice++;
+    else if (e.event_type === 'heartbeat') heart++;
+  }
+  document.getElementById('cnt-face').textContent = face;
+  document.getElementById('cnt-voice').textContent = voice;
+  document.getElementById('cnt-heart').textContent = heart;
+}
+
+function renderTable(events) {
+  const tbody = document.getElementById('tbody');
+  if (!events.length) {
+    tbody.innerHTML = '<tr class="empty"><td colspan="3">暂无数据</td></tr>';
+    return;
+  }
+  // 详情字段中文映射
+  const keyMap = {
+    id: '用户', action: '动作', cmd: '指令',
+    uptime: '运行时长', wifi_rssi: 'WiFi信号',
+    time: '时间',
+  };
+  tbody.innerHTML = events.map(e => {
+    let detail = '';
+    try {
+      const d = JSON.parse(e.detail || '{}');
+      detail = Object.entries(d).map(([k, v]) => `${keyMap[k] || k}=${v}`).join(', ');
+    } catch (_) {
+      detail = e.detail || '-';
+    }
+    return `<tr>
+      <td>${tagHtml(e.event_type)}</td>
+      <td class="detail-cell" title="${escapeHtml(detail)}">${escapeHtml(detail)}</td>
+      <td class="time-cell">${formatTime(e.created_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// 初始化
+fetchEvents();
+fetchStatus();
+
+// 倒计时 + 自动刷新
+setInterval(() => {
+  countdown--;
+  document.getElementById('countdown').textContent = countdown;
+  if (countdown <= 0) {
+    fetchEvents();
+    fetchStatus();
+  }
+}, 1000);
+</script>
+</body>
+</html>
