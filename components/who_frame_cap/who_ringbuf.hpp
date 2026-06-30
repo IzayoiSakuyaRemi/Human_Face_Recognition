@@ -14,20 +14,24 @@ public:
 
     ~RingBuf() { delete[] m_buffer; }
 
-    void push(const T &value)
+    bool push(const T &value)
     {
-        if (m_count == m_capacity) {
-            ESP_LOGE("RingBuf", "RingBuf is full — dropping oldest.");
-            pop();
+        if (m_count >= m_capacity) {
+            if (m_capacity == 0) return false;
+            // 满时自动挤出最老元素
+            m_head = (m_head + 1) % m_capacity;
+            m_count--;
         }
         m_buffer[(m_head + m_count) % m_capacity] = value;
         m_count++;
+        return true;
     }
 
     T pop()
     {
-        if (m_count == 0) {
-            ESP_LOGE("RingBuf", "RingBuf is empty.");
+        if (m_count <= 0) {
+            m_count = 0;  // 钳制，防止变成负数
+            return T{};    // 返回默认值
         }
         T value = m_buffer[m_head];
         m_head = (m_head + 1) % m_capacity;
@@ -37,16 +41,17 @@ public:
 
     T &operator[](int index)
     {
-        if (index < 0 || index >= m_count) {
-            ESP_LOGE("RingBuf", "Index out of range.");
+        if (m_count <= 0 || index < 0 || index >= m_count) {
+            static T dummy{};
+            return dummy;  // 永不返回越界引用
         }
         return m_buffer[(m_head + index) % m_capacity];
     }
 
     std::vector<T> range(int start, int end) const
     {
-        if (start < 0 || end > m_count || start > end) {
-            ESP_LOGE("RingBuf", "Invalid range.");
+        if (start < 0 || end > m_count || start > end || m_count <= 0) {
+            return {};
         }
         if (start == end) {
             return {};
@@ -66,16 +71,18 @@ public:
 
     T &front()
     {
-        if (m_count == 0) {
-            ESP_LOGE("RingBuf", "RingBuf is empty.");
+        if (m_count <= 0) {
+            static T dummy{};
+            return dummy;
         }
         return m_buffer[m_head];
     }
 
     T &back()
     {
-        if (m_count == 0) {
-            ESP_LOGE("RingBuf", "RingBuf is empty.");
+        if (m_count <= 0) {
+            static T dummy{};
+            return dummy;
         }
         return m_buffer[(m_head + m_count - 1) % m_capacity];
     }

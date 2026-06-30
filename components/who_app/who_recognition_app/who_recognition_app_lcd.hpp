@@ -26,9 +26,11 @@ private:
     lcd_disp::WhoDetectResultLCDDisp *m_detect_result_lcd_disp;
     lv_obj_t *m_label;
     lv_obj_t *m_status_label;
+    lv_obj_t *m_exec_label;
 
 public:
     void set_status_text(const char *text);
+    void set_exec_text(const char *text);
 };
 } // namespace app
 } // namespace who

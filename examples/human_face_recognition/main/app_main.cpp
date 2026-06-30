@@ -2,8 +2,8 @@
 #include "who_recognition_app_lcd.hpp"
 #include "who_recognition_app_term.hpp"
 #include "who_spiflash_fatfs.hpp"
+#include "wifi_provisioning.hpp"
 #include "driver/gpio.h"
-#include "driver/i2s_std.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "esp_codec_dev.h"
@@ -13,16 +13,34 @@
 #include "esp_mn_speech_commands.h"
 #include "model_path.h"
 #include "esp_task_wdt.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "nvs_flash.h"
+#include <cstring>
+
+extern char g_last_recog_face[64];
 
 static const char *TAG = "app_main";
-static who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
-EventGroupHandle_t g_recog_event_group = nullptr;  // 由 who_recognition_app_lcd 设置
-static esp_codec_dev_handle_t g_mic_handle = nullptr;
-static SemaphoreHandle_t g_espdl_mutex = nullptr;
-static volatile int g_skip_detect_count = 0;  // 识别期间跳过语音 detect 的剩余次数
+
+// 配网状态 — 供 esp-who display 初始化后读取
+static char g_wifi_status[128] = "Starting...";
+
+// --- 配网状态回调 (仅记录到串口和全局字符串) ---
+static void wifi_prov_status_cb(const char *status, bool done)
+{
+    strncpy(g_wifi_status, status, sizeof(g_wifi_status) - 1);
+    ESP_LOGI(TAG, "WiFi: %s", status);
+    (void)done;
+}
 
 using namespace who::frame_cap;
 using namespace who::app;
+
+static WhoRecognitionAppLCD *g_recognition_app = nullptr;
+EventGroupHandle_t g_recog_event_group = nullptr;
+static esp_codec_dev_handle_t g_mic_handle = nullptr;
+static SemaphoreHandle_t g_espdl_mutex = nullptr;
+static volatile int g_skip_detect_count = 0;
 
 struct voice_task_params_t {
     esp_mn_iface_t *multinet;
@@ -30,7 +48,6 @@ struct voice_task_params_t {
     int chunksize;
 };
 
-// 语音识别任务 — 仅做检测循环，模型加载在主线程完成
 static void voice_recognition_task(void *arg)
 {
     voice_task_params_t *p = (voice_task_params_t *)arg;
@@ -49,7 +66,6 @@ static void voice_recognition_task(void *arg)
         read_count++;
         int64_t now = esp_timer_get_time();
         if (now - last_log > 1000000) {
-            // 检测 buffer 里是否有真实音频（非零点）
             int nz = 0;
             for (int i = 0; i < chunksize; i++) if (buffer[i] != 0) nz++;
             ESP_LOGI(TAG, "Codec read: %d calls/sec, nonzero=%d/%d", read_count, nz, chunksize);
@@ -57,7 +73,7 @@ static void voice_recognition_task(void *arg)
             last_log = now;
         }
         if (g_skip_detect_count > 0) {
-            g_skip_detect_count--;
+            g_skip_detect_count = g_skip_detect_count - 1;
         } else if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(100))) {
             esp_mn_state_t state = multinet->detect(mn_data, buffer);
             if (state == ESP_MN_STATE_DETECTED) {
@@ -71,17 +87,21 @@ static void voice_recognition_task(void *arg)
                     case 5:
                         cmd = "Recog: Face";
                         if (g_recog_event_group) {
-                            g_skip_detect_count = 100;  // 跳过 ~3 秒，足够识别完成
+                            g_skip_detect_count = 100;
                             xEventGroupSetBits(g_recog_event_group, 32);
                         }
                         break;
                 }
                 ESP_LOGI(TAG, "Detected: %s", cmd);
-                if (g_recognition_app) g_recognition_app->set_status_text(cmd);
+                if (g_recognition_app) {
+                    g_recognition_app->set_status_text(cmd);
+                    bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
+                    g_recognition_app->set_exec_text(authorized ? "Allow: Yes" : "Allow: No");
+                }
             }
             xSemaphoreGive(g_espdl_mutex);
         }
-        taskYIELD();  // 微秒级让步 WhoFetchNode，防帧缓冲饿死
+        taskYIELD();
     }
     free(buffer);
     vTaskDelete(NULL);
@@ -89,7 +109,31 @@ static void voice_recognition_task(void *arg)
 
 extern "C" void app_main(void)
 {
+    // ====================================================================
+    // Phase 1: NVS + Event Loop
+    // ====================================================================
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
     vTaskPrioritySet(xTaskGetCurrentTaskHandle(), 5);
+
+    // Light up backlight as power-on indicator (display content comes later via esp-who)
+    gpio_set_direction(GPIO_NUM_20, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_20, 1);
+
+    // ====================================================================
+    // Phase 2: WiFi Provisioning (blocking — serial monitor shows progress)
+    // ====================================================================
+    ESP_LOGI(TAG, "===== WiFi Provisioning =====");
+    wifi_provisioning_start(wifi_prov_status_cb);
+    ESP_LOGI(TAG, "===== WiFi Connected, continuing init =====");
+
+    // ====================================================================
+    // Phase 3: Filesystem + Display + Camera + Audio + Recognition
+    // ====================================================================
 #if CONFIG_DB_FATFS_FLASH
     ESP_ERROR_CHECK(fatfs_flash_mount());
 #elif CONFIG_DB_SPIFFS
@@ -99,20 +143,13 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(bsp_sdcard_mount());
 #endif
 
-// close led
-#ifdef BSP_BOARD_ESP32_S3_EYE
-    ESP_ERROR_CHECK(bsp_leds_init());
-    ESP_ERROR_CHECK(bsp_led_set(BSP_LED_GREEN, false));
-#endif
-
 #if CONFIG_IDF_TARGET_ESP32S3
     auto frame_cap = get_dvp_frame_cap_pipeline();
 #elif CONFIG_IDF_TARGET_ESP32P4
     auto frame_cap = get_mipi_csi_frame_cap_pipeline();
-    // auto frame_cap = get_uvc_frame_cap_pipeline();
 #endif
 
-    // ===== 初始化音频: BSP 创建 I2S + ES8311，我们拿 RX 句柄直接读 =====
+    // ---- Init Audio ----
     {
         i2s_std_config_t audio_cfg = {
             .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),
@@ -132,21 +169,13 @@ extern "C" void app_main(void)
         esp_codec_dev_open(speaker, &fs);
         esp_codec_dev_open(g_mic_handle, &fs);
         esp_codec_dev_set_in_gain(g_mic_handle, 40.0);
-
-        // 重配 I2S RX 为 xiaozhi 的 STEREO 参数（在 codec open 后）
-        // Note: BSP 不暴露 RX handle，但 I2S_NUM_1 已被占用。
-        // 语音任务通过 esp_codec_dev_read 间接读，尽量消除 buffer 问题。
-        ESP_LOGI(TAG, "Audio: BSP init complete, using codec read path");
+        ESP_LOGI(TAG, "Audio: BSP init complete");
     }
 
-    // 强制点亮背光 (GPIO20)
-    gpio_set_direction(GPIO_NUM_20, GPIO_MODE_OUTPUT);
-    gpio_set_level(GPIO_NUM_20, 1);
-
-    // ===== 加载语音模型（临时降优先级，避免饿死摄像头帧提取任务）=====
+    // ---- Load Voice Model ----
     voice_task_params_t voice_params = {};
     {
-        vTaskPrioritySet(NULL, 1);  // 降到 1，让 WhoFetchNode (prio 2) 能运行
+        vTaskPrioritySet(NULL, 1);
         srmodel_list_t *models = esp_srmodel_init("model");
         if (models && models->num > 0) {
             char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, "cn");
@@ -154,7 +183,7 @@ extern "C" void app_main(void)
                 ESP_LOGI(TAG, "MultiNet model: %s", mn_name);
                 voice_params.multinet = esp_mn_handle_from_name(mn_name);
                 voice_params.mn_data = voice_params.multinet->create(mn_name, 6000);
-                voice_params.multinet->set_det_threshold(voice_params.mn_data, 0.10);  // 降到 10% 提高灵敏度
+                voice_params.multinet->set_det_threshold(voice_params.mn_data, 0.10);
                 esp_mn_commands_add(1, "da kai dian shi");
                 esp_mn_commands_add(2, "guan bi dian shi");
                 esp_mn_commands_add(3, "da kai men");
@@ -164,11 +193,15 @@ extern "C" void app_main(void)
                 voice_params.chunksize = voice_params.multinet->get_samp_chunksize(voice_params.mn_data);
             }
         }
-        vTaskPrioritySet(NULL, 5);  // 恢复高优先级
+        vTaskPrioritySet(NULL, 5);
     }
 
+    // ---- Create Recognition App (esp-who initializes display internally) ----
     auto recognition_app = new WhoRecognitionAppLCD(frame_cap);
     g_recognition_app = recognition_app;
+
+    // Show WiFi result on the now-initialized display
+    recognition_app->set_status_text(g_wifi_status);
 
     g_espdl_mutex = xSemaphoreCreateMutex();
 
@@ -178,5 +211,5 @@ extern "C" void app_main(void)
         xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 8192, p, 2, NULL, 0);
     }
 
-    recognition_app->run();  // 只调用一次！
+    recognition_app->run();
 }

@@ -76,6 +76,10 @@ void WhoDetect::task()
             }
         }
         auto fb = m_frame_cap_node->cam_fb_peek();
+        if (!fb) {
+            vTaskDelay(pdMS_TO_TICKS(10));  // 缓冲空，等帧
+            continue;
+        }
         struct timeval timestamp = fb->timestamp;
         dl::image::img_t img = static_cast<dl::image::img_t>(*fb);
         auto &res = m_model->run(img);
