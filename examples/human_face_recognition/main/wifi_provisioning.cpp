@@ -13,6 +13,7 @@
 #include <esp_http_server.h>
 #include <vector>
 #include <algorithm>
+#include <cstdlib>
 
 static const char *TAG = "wifi_prov";
 
@@ -25,6 +26,7 @@ static const char *NVS_KEY_PASS   = "password";
 static const int BIT_CONNECTED   = BIT0;
 static const int BIT_TIMEOUT     = BIT1;
 static const int BIT_CONFIG_DONE = BIT2;
+static const int BIT_SCAN_DONE   = BIT3;
 static EventGroupHandle_t s_evt = nullptr;
 
 // Config AP settings
@@ -41,6 +43,14 @@ static esp_netif_t *s_ap_netif  = nullptr;
 // SSID/password received from config page
 static char s_cfg_ssid[33] = {0};
 static char s_cfg_password[65] = {0};
+
+// Scan results
+static struct { char ssid[33]; int rssi; } scan_results[20];
+static int scan_count = 0;
+
+// Forward declarations
+static esp_err_t nvs_erase_creds(void);
+static bool parse_ssid_pass(const char *body);
 
 // --- NVS helpers ---
 static esp_err_t nvs_save_creds(const char *ssid, const char *pass) {
@@ -67,17 +77,40 @@ static esp_err_t nvs_load_creds(char *ssid_out, size_t ssid_len, char *pass_out,
     return err;
 }
 
+static esp_err_t nvs_erase_creds(void) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    nvs_erase_all(h);
+    nvs_commit(h);
+    nvs_close(h);
+    return ESP_OK;
+}
+
 // --- WiFi event handler ---
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data) {
     if (base == WIFI_EVENT) {
         if (id == WIFI_EVENT_STA_START) {
-            esp_wifi_connect();
+            if (!s_ap_mode) esp_wifi_connect();  // only in STA mode
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             wifi_event_sta_disconnected_t *ev = (wifi_event_sta_disconnected_t *)data;
             ESP_LOGW(TAG, "WiFi disconnected, reason=%d", ev->reason);
             if (!s_ap_mode) {
                 esp_wifi_connect();  // auto-retry in STA mode
             }
+        } else if (id == WIFI_EVENT_SCAN_DONE) {
+            uint16_t num = 20;
+            wifi_ap_record_t aps[20];
+            memset(aps, 0, sizeof(aps));
+            esp_wifi_scan_get_ap_records(&num, aps);
+            scan_count = (num > 20) ? 20 : num;
+            for (int i = 0; i < scan_count; i++) {
+                strncpy(scan_results[i].ssid, (const char *)aps[i].ssid, 32);
+                scan_results[i].rssi = aps[i].rssi;
+            }
+            std::sort(scan_results, scan_results + scan_count,
+                      [](const auto &a, const auto &b) { return a.rssi > b.rssi; });
+            xEventGroupSetBits(s_evt, BIT_SCAN_DONE);
         }
     } else if (base == IP_EVENT) {
         if (id == IP_EVENT_STA_GOT_IP) {
@@ -178,32 +211,18 @@ var s=document.getElementById('status'),p=document.getElementById('spinner'),d=d
 function t(m){s.textContent=m;p.style.display='none'}
 function l(){p.style.display='block';s.textContent=''}
 async function scanNetworks(){l();try{let r=await fetch('/api/scan'),j=await r.json();d.innerHTML='';j.ap_list.forEach(a=>{let o=document.createElement('option');o.value=a.ssid;o.textContent=a.ssid+' ('+a.rssi+'dBm)';d.appendChild(o)});t('扫描到 '+j.ap_list.length+' 个网络')}catch(e){t('扫描失败')}}
-async function doConnect(){let x=d.value,y=document.getElementById('pass').value;if(!x){t('请选择网络');return}l();try{let r=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:x,password:y})});if(r.ok){t('保存成功!设备将连接...')}else{t('失败')}}catch(e){t('请求出错')}}
+async function doConnect(){let x=d.value,y=document.getElementById('pass').value;if(!x){t('请选择网络');return}l();try{let r=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ssid='+encodeURIComponent(x)+'&password='+encodeURIComponent(y)});if(r.ok){t('保存成功!设备将连接...')}else{t('失败')}}catch(e){t('请求出错')}}
 </script>
 </body>
 </html>)raw";
 
-static struct { char ssid[33]; int rssi; } scan_results[20];
-static int scan_count = 0;
-
 static void wifi_do_scan(void) {
     scan_count = 0;
     memset(scan_results, 0, sizeof(scan_results));
-    wifi_scan_config_t sc = {};
-    sc.scan_type = WIFI_SCAN_TYPE_ACTIVE;
-    sc.scan_time.active.min = 100;
-    sc.scan_time.active.max = 300;
-    esp_wifi_scan_start(&sc, true);
-    uint16_t num = 20;
-    wifi_ap_record_t aps[20];
-    esp_wifi_scan_get_ap_records(&num, aps);
-    scan_count = (num > 20) ? 20 : num;
-    for (int i = 0; i < scan_count; i++) {
-        strncpy(scan_results[i].ssid, (const char *)aps[i].ssid, 32);
-        scan_results[i].rssi = aps[i].rssi;
-    }
-    std::sort(scan_results, scan_results + scan_count,
-              [](const auto &a, const auto &b) { return a.rssi > b.rssi; });
+    xEventGroupClearBits(s_evt, BIT_SCAN_DONE);
+    esp_wifi_scan_start(nullptr, false);  // same as xiaozhi
+    // Wait up to 5s for WIFI_EVENT_SCAN_DONE (handled in main event handler)
+    xEventGroupWaitBits(s_evt, BIT_SCAN_DONE, pdTRUE, pdTRUE, pdMS_TO_TICKS(5000));
 }
 
 static esp_err_t http_scan_handler(httpd_req_t *req) {
@@ -221,31 +240,21 @@ static esp_err_t http_scan_handler(httpd_req_t *req) {
 }
 
 static esp_err_t http_connect_handler(httpd_req_t *req) {
-    char buf[256];
+    char buf[512];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty"); return ESP_FAIL; }
     buf[len] = '\0';
 
-    // Extract SSID
-    char *ssid_s = strstr(buf, "\"ssid\"");
-    if (!ssid_s) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No ssid"); return ESP_FAIL; }
-    ssid_s = strchr(ssid_s, '"'); ssid_s = strchr(ssid_s + 1, '"'); ssid_s++;
-    char *ssid_e = strchr(ssid_s, '"');
-    size_t sl = (ssid_e - ssid_s > 31) ? 31 : ssid_e - ssid_s;
-    memcpy(s_cfg_ssid, ssid_s, sl); s_cfg_ssid[sl] = '\0';
-
-    // Extract password
-    char *pass_s = strstr(buf, "\"password\"");
-    if (pass_s) {
-        pass_s = strchr(pass_s, '"'); pass_s = strchr(pass_s + 1, '"'); pass_s++;
-        char *pass_e = strchr(pass_s, '"');
-        if (pass_e) {
-            size_t pl = (pass_e - pass_s > 63) ? 63 : pass_e - pass_s;
-            memcpy(s_cfg_password, pass_s, pl); s_cfg_password[pl] = '\0';
-        }
+    if (!parse_ssid_pass(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Parse error");
+        return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "Config page: SSID=%s", s_cfg_ssid);
+    if (strlen(s_cfg_ssid) == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID empty");
+        return ESP_FAIL;
+    }
     nvs_save_creds(s_cfg_ssid, s_cfg_password);
 
     httpd_resp_set_type(req, "application/json");
@@ -255,9 +264,60 @@ static esp_err_t http_connect_handler(httpd_req_t *req) {
 }
 
 static esp_err_t http_index_handler(httpd_req_t *req) {
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, HTML_PAGE, strlen(HTML_PAGE));
     return ESP_OK;
+}
+
+// Parse SSID/password from BOTH JSON and URL-encoded POST bodies
+static bool parse_ssid_pass(const char *body) {
+    // Try URL-encoded first: ssid=xxx&password=yyy
+    const char *p = strstr(body, "ssid=");
+    if (p) {
+        p += 5; // skip "ssid="
+        const char *end = strchr(p, '&');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len > 31) len = 31;
+        memcpy(s_cfg_ssid, p, len); s_cfg_ssid[len] = '\0';
+        // URL decode
+        for (size_t i = 0; s_cfg_ssid[i]; i++) {
+            if (s_cfg_ssid[i] == '+') s_cfg_ssid[i] = ' ';
+            else if (s_cfg_ssid[i] == '%' && s_cfg_ssid[i+1] && s_cfg_ssid[i+2]) {
+                char hex[3] = {s_cfg_ssid[i+1], s_cfg_ssid[i+2], 0};
+                s_cfg_ssid[i] = (char)strtol(hex, NULL, 16);
+                memmove(s_cfg_ssid+i+1, s_cfg_ssid+i+3, strlen(s_cfg_ssid+i+3)+1);
+            }
+        }
+        // password
+        p = strstr(body, "password=");
+        if (p) {
+            p += 9; end = strchr(p, '&'); len = end ? (size_t)(end - p) : strlen(p);
+            if (len > 63) { len = 63; }
+            memcpy(s_cfg_password, p, len); s_cfg_password[len] = '\0';
+        }
+        return true;
+    }
+    // Fallback JSON: {"ssid":"x","password":"y"} — find ssid value between quotes
+    p = strstr(body, "\"ssid\"");
+    if (p) {
+        p = strchr(p + 6, '"'); if (p) p++; // skip to value start
+        const char *end = p ? strchr(p, '"') : NULL;
+        size_t len = end ? (size_t)(end - p) : 0;
+        if (len > 31) len = 31;
+        if (p && len > 0) { memcpy(s_cfg_ssid, p, len); s_cfg_ssid[len] = '\0'; }
+        // password
+        p = strstr(body, "\"password\"");
+        if (p) {
+            p = strchr(p + 10, '"'); if (p) p++;
+            end = p ? strchr(p, '"') : NULL;
+            len = end ? (size_t)(end - p) : 0;
+            if (len > 63) { len = 63; }
+            if (p && len > 0) { memcpy(s_cfg_password, p, len); s_cfg_password[len] = '\0'; }
+        }
+        return true;
+    }
+    return false;
 }
 
 // ======================= Main flow =======================
@@ -267,19 +327,21 @@ esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb) {
 
     if (s_status_cb) s_status_cb("Init WiFi...", false);
 
-    // 一次性初始化 TCP/IP + WiFi driver
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    ESP_ERROR_CHECK(wifi_init_once());
+    // Init once (safe to call multiple times — returns ERR_INVALID_STATE if already done)
+    esp_netif_init();
+    esp_event_loop_create_default();
+    wifi_init_once();
 
     // 尝试已保存凭据
     char saved_ssid[33] = {0}, saved_pass[65] = {0};
     if (nvs_load_creds(saved_ssid, sizeof(saved_ssid), saved_pass, sizeof(saved_pass)) == ESP_OK
-        && strlen(saved_ssid) > 0) {
+        && strlen(saved_ssid) >= 2 && !strchr(saved_ssid, '"') && !strchr(saved_ssid, ':')) {
         ESP_LOGI(TAG, "Found saved: %s", saved_ssid);
         if (s_status_cb) s_status_cb("Connecting to saved WiFi...", false);
         if (wifi_try_connect(saved_ssid, saved_pass))
             return ESP_OK;
+        // Failed — erase bad creds
+        nvs_erase_creds();
     }
 
     // === SoftAP 配网模式 ===
@@ -287,7 +349,7 @@ esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb) {
     s_ap_mode = true;
 
     esp_wifi_stop();
-    esp_wifi_set_mode(WIFI_MODE_AP);
+    esp_wifi_set_mode(WIFI_MODE_APSTA);  // APSTA: STA can scan while AP runs
 
     // 创建 AP netif（如果还没有）
     if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
@@ -310,6 +372,7 @@ esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb) {
     // 启动 HTTP 配网服务器
     httpd_config_t httpd_cfg = HTTPD_DEFAULT_CONFIG();
     httpd_cfg.lru_purge_enable = true;
+    httpd_cfg.stack_size = 8192;  // wifi_do_scan needs extra stack
     httpd_handle_t httpd = NULL;
     httpd_start(&httpd, &httpd_cfg);
 

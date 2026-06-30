@@ -139,15 +139,13 @@ dependencies:
       type: service
     version: 1.0.4
   espressif/esp_hosted:
-    component_hash: 59c68fc3a8f25388b9a239ddec5f7bc81e6310d51108db1688e129e791450c31
     dependencies:
     - name: idf
-      require: private
       version: '>=5.3'
     source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.12.9
+      path: D:\works\esp-who-master\examples\human_face_recognition\managed_components\espressif__esp_hosted
+      type: local
+    version: 2.0.17
   espressif/esp_ipa:
     component_hash: 31003e536f0d26158e10d7fcf2448b6377ce1148518287d0f34ed3b6c942c6d8
     dependencies:
@@ -310,24 +308,18 @@ dependencies:
     - esp32c61
     version: 1.4.1
   espressif/esp_wifi_remote:
-    component_hash: caa856dac9d28afacafbaefdaaef3fffdf3f9149c6011ba36ac680a13f5fc19f
     dependencies:
     - name: espressif/esp_hosted
-      registry_url: https://components.espressif.com
-      require: private
       rules:
       - if: target in [esp32h2, esp32p4]
       version: '>=2.11'
     - name: espressif/wifi_remote_over_eppp
-      registry_url: https://components.espressif.com
-      require: private
       version: '>=0.1'
     - name: idf
-      require: private
       version: '>=5.3'
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: D:\works\esp-who-master\examples\human_face_recognition\managed_components\espressif__esp_wifi_remote
+      type: local
     version: 1.6.1
   espressif/human_face_detect:
     component_hash: db0eb640104c69b7b07b6629ab80b270fc446fee32909832d2ac7691b4e66a3e
@@ -385,7 +377,7 @@ dependencies:
       require: private
       version: '>=0.1'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 0.3.2
   idf:
@@ -417,6 +409,6 @@ direct_dependencies:
 - espressif/usb_host_uvc
 - idf
 - lvgl/lvgl
-manifest_hash: b973a569078dea37dd197bc469f057d34a94c40a88edb6a736e276ee4552b559
+manifest_hash: aa3488dfb6001898fa66ba1f688f6657ed19284cf23b4ed8d149c3ed422d81bd
 target: esp32p4
 version: 2.0.0
