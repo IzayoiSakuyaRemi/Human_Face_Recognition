@@ -1,4 +1,5 @@
-<!DOCTYPE html>
+﻿import pathlib
+html = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -674,3 +675,6 @@ setInterval(function(){fStatus();},15000);
 </script>
 </body>
 </html>
+"""
+pathlib.Path(r"D:\WORKS\Human_Face_Recognition_site\templates\index.html").write_text(html, encoding="utf-8")
+print("Written", len(html), "bytes")
