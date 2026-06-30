@@ -407,3 +407,14 @@ esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb) {
     vTaskDelay(pdMS_TO_TICKS(3000));
     return wifi_provisioning_start(status_cb);
 }
+
+// Async: start provisioning in background task
+static void prov_task(void *arg) {
+    wifi_prov_status_cb_t cb = (wifi_prov_status_cb_t)arg;
+    wifi_provisioning_start(cb);
+    vTaskDelete(NULL);
+}
+
+void wifi_provisioning_start_async(wifi_prov_status_cb_t status_cb) {
+    xTaskCreate(prov_task, "wifi_prov", 6144, (void*)status_cb, 5, NULL);
+}

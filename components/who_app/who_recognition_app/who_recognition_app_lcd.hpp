@@ -33,6 +33,10 @@ public:
     void set_status_text(const char *text);
     void set_exec_text(const char *text);
     void set_wifi_text(const char *text);
+    static void wifi_btn_click_cb(lv_event_t *e);
 };
 } // namespace app
 } // namespace who
+
+// Global: set before creating WhoRecognitionAppLCD to handle WiFi button clicks
+extern void (*g_on_wifi_btn_click)();

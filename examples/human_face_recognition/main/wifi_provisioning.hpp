@@ -23,3 +23,4 @@ typedef void (*wifi_prov_status_cb_t)(const char *status, bool done);
  * @return ESP_OK on success
  */
 esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb);
+void wifi_provisioning_start_async(wifi_prov_status_cb_t status_cb);

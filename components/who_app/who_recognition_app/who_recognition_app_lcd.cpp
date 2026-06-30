@@ -4,7 +4,8 @@
 #include "who_yield2idle.hpp"
 
 extern EventGroupHandle_t g_recog_event_group;
-char g_last_recog_face[64] = "Unknown";  // 最后一次识别结果，默认无人脸
+char g_last_recog_face[64] = "Unknown";
+void (*g_on_wifi_btn_click)() = nullptr;  // defined in who::app namespace
 
 LV_FONT_DECLARE(montserrat_bold_26);
 LV_FONT_DECLARE(montserrat_bold_20);
@@ -45,9 +46,10 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     m_exec_label = create_lvgl_label("", &montserrat_bold_20, {0, 255, 0});
     lv_obj_align(m_exec_label, LV_ALIGN_TOP_LEFT, 10, 40);
 
-    // WiFi 状态标签 — 状态标签下方
-    m_wifi_label = create_lvgl_label("WiFi: OK", &montserrat_bold_20, {0, 255, 0});
-    lv_obj_align(m_wifi_label, LV_ALIGN_TOP_LEFT, 10, 70);
+    // WiFi 按钮 — 和 recognize/enroll/delete 同款，右下角
+    m_wifi_label = create_lvgl_btn("WiFi: Off", &montserrat_bold_26);
+    lv_obj_align(m_wifi_label, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+    lv_obj_add_event_cb(m_wifi_label, wifi_btn_click_cb, LV_EVENT_CLICKED, nullptr);
     bsp_display_unlock();
 
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -144,14 +146,22 @@ void WhoRecognitionAppLCD::set_exec_text(const char *text)
 {
     bsp_display_lock(0);
     lv_label_set_text(m_exec_label, text);
+    // Red for Alarm, green for Allow
+    lv_color_t c = (strstr(text, "Alarm")) ? lv_color_make(255, 0, 0) : lv_color_make(0, 255, 0);
+    lv_obj_set_style_text_color(m_exec_label, c, LV_PART_MAIN);
     bsp_display_unlock();
 }
 
 void WhoRecognitionAppLCD::set_wifi_text(const char *text)
 {
     bsp_display_lock(0);
-    lv_label_set_text(m_wifi_label, text);
+    lv_obj_t *label = lv_obj_get_child(m_wifi_label, 0);
+    if (label) lv_label_set_text(label, text);
     bsp_display_unlock();
+}
+void WhoRecognitionAppLCD::wifi_btn_click_cb(lv_event_t *e)
+{
+    if (g_on_wifi_btn_click) g_on_wifi_btn_click();
 }
 } // namespace app
 } // namespace who

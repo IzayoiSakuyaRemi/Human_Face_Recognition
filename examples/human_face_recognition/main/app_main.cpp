@@ -24,22 +24,25 @@ extern char g_last_recog_face[64];
 extern char g_wifi_ip[32];
 
 static const char *TAG = "app_main";
+static who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
 
 // 配网状态 — 供 esp-who display 初始化后读取
 static char g_wifi_status[128] = "Starting...";
 
-// --- 配网状态回调 (仅记录到串口和全局字符串) ---
+// --- 配网状态回调 ---
 static void wifi_prov_status_cb(const char *status, bool done)
 {
     strncpy(g_wifi_status, status, sizeof(g_wifi_status) - 1);
     ESP_LOGI(TAG, "WiFi: %s", status);
+    if (g_recognition_app) {
+        g_recognition_app->set_wifi_text(status);
+    }
     (void)done;
 }
 
 using namespace who::frame_cap;
 using namespace who::app;
 
-static WhoRecognitionAppLCD *g_recognition_app = nullptr;
 EventGroupHandle_t g_recog_event_group = nullptr;
 static esp_codec_dev_handle_t g_mic_handle = nullptr;
 static SemaphoreHandle_t g_espdl_mutex = nullptr;
@@ -83,24 +86,43 @@ static void voice_recognition_task(void *arg)
                 esp_mn_results_t *r = multinet->get_results(mn_data);
                 const char *cmd = "Cmd: Unknown";
                 switch (r->command_id[0]) {
-                    case 1: cmd = "Cmd: Open TV"; report_event("voice_command", "\"cmd\":\"Open TV\""); break;
-                    case 2: cmd = "Cmd: Close TV"; report_event("voice_command", "\"cmd\":\"Close TV\""); break;
-                    case 3: cmd = "Cmd: Open Door"; report_event("voice_command", "\"cmd\":\"Open Door\""); break;
-                    case 4: cmd = "Cmd: Close Door"; report_event("voice_command", "\"cmd\":\"Close Door\""); break;
-                    case 5:
-                        cmd = "Recog: Face";
-                        report_event("face_recognized", "\"action\":\"trigger\"");
-                        if (g_recog_event_group) {
-                            g_skip_detect_count = 100;
-                            xEventGroupSetBits(g_recog_event_group, 32);
-                        }
-                        break;
+                    case 1: cmd = "Cmd: Open TV"; break;
+                    case 2: cmd = "Cmd: Close TV"; break;
+                    case 3: cmd = "Cmd: Open Door"; break;
+                    case 4: cmd = "Cmd: Close Door"; break;
+                    case 5: cmd = "Cmd: Identify"; break;
                 }
                 ESP_LOGI(TAG, "Detected: %s", cmd);
+
+                // Every voice command triggers face recognition
+                if (g_recog_event_group) {
+                    g_skip_detect_count = 100;
+                    xEventGroupSetBits(g_recog_event_group, 32);
+                }
+
+                // Wait briefly for recognition to complete
+                vTaskDelay(pdMS_TO_TICKS(1500));
+
+                bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
+                const char *who = authorized ? g_last_recog_face : "stranger";
+                const char *result = authorized ? "allow" : "alarm";
+
                 if (g_recognition_app) {
                     g_recognition_app->set_status_text(cmd);
-                    bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
-                    g_recognition_app->set_exec_text(authorized ? "Allow: Yes" : "Allow: No");
+                    if (authorized) {
+                        g_recognition_app->set_exec_text("Allow: Yes");
+                    } else {
+                        g_recognition_app->set_exec_text("Alarm!");
+                    }
+                }
+
+                // Combined event: who + what command + result
+                {
+                    char json_buf[128];
+                    snprintf(json_buf, sizeof(json_buf),
+                             "\"cmd\":\"%s\",\"face\":\"%s\",\"result\":\"%s\"",
+                             cmd, who, result);
+                    report_event("voice_command", json_buf);
                 }
             }
             xSemaphoreGive(g_espdl_mutex);
@@ -129,14 +151,13 @@ extern "C" void app_main(void)
     gpio_set_level(GPIO_NUM_20, 1);
 
     // ====================================================================
-    // Phase 2: WiFi Provisioning (blocking — serial monitor shows progress)
+    // Phase 2: Init event loop (needed by esp-who components)
     // ====================================================================
-    ESP_LOGI(TAG, "===== WiFi Provisioning =====");
-    wifi_provisioning_start(wifi_prov_status_cb);
-    ESP_LOGI(TAG, "===== WiFi Connected, continuing init =====");
+    esp_netif_init();
+    esp_event_loop_create_default();
 
     // ====================================================================
-    // Phase 3: Filesystem + Display + Camera + Audio + Recognition
+    // Phase 3: Filesystem + Camera + Audio + Recognition (WiFi later on click)
     // ====================================================================
 #if CONFIG_DB_FATFS_FLASH
     ESP_ERROR_CHECK(fatfs_flash_mount());
@@ -204,8 +225,12 @@ extern "C" void app_main(void)
     auto recognition_app = new WhoRecognitionAppLCD(frame_cap);
     g_recognition_app = recognition_app;
 
-    // WiFi status in top-right corner (shows IP if available)
-    recognition_app->set_wifi_text(g_wifi_ip[0] ? g_wifi_ip : g_wifi_status);
+    // WiFi button: click to start provisioning
+    extern void (*g_on_wifi_btn_click)();
+    g_on_wifi_btn_click = []() {
+        wifi_provisioning_start_async(wifi_prov_status_cb);
+    };
+    recognition_app->set_wifi_text("WiFi: Off");
 
     g_espdl_mutex = xSemaphoreCreateMutex();
 
