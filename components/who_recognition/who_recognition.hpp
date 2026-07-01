@@ -13,6 +13,7 @@ public:
     WhoRecognitionCore(const std::string &name, detect::WhoDetect *detect);
     ~WhoRecognitionCore();
     void set_recognizer(HumanFaceRecognizer *recognizer);
+    HumanFaceRecognizer *get_recognizer() { return m_recognizer; }
     void set_recognition_result_cb(const std::function<void(const std::string &)> &result_cb);
     void set_detect_result_cb(const std::function<void(const detect::WhoDetect::result_t &)> &result_cb);
     void set_cleanup_func(const std::function<void()> &cleanup_func);

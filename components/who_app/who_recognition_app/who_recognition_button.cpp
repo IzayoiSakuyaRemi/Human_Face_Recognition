@@ -85,9 +85,19 @@ WhoRecognitionButtonLVGL::WhoRecognitionButtonLVGL(recognition::WhoRecognitionCo
     lv_obj_set_size(m_btn_enroll, w, h);
     lv_obj_set_size(m_btn_delete, w, h);
     int32_t pad = h / 2;
-    lv_obj_align(m_btn_recognize, LV_ALIGN_TOP_RIGHT, -pad, pad);
-    lv_obj_align(m_btn_enroll, LV_ALIGN_TOP_RIGHT, -pad, pad + h + pad);
-    lv_obj_align(m_btn_delete, LV_ALIGN_TOP_RIGHT, -pad, pad + 2 * (h + pad));
+    // Right sidebar: buttons stacked vertically
+    lv_obj_align(m_btn_recognize, LV_ALIGN_TOP_RIGHT, -10, 50);
+    lv_obj_align(m_btn_enroll, LV_ALIGN_TOP_RIGHT, -10, 50 + h + pad);
+    lv_obj_align(m_btn_delete, LV_ALIGN_TOP_RIGHT, -10, 50 + 2 * (h + pad));
+
+    // Style all three buttons with visible background + border
+    for (auto *btn : {m_btn_recognize, m_btn_enroll, m_btn_delete}) {
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_80, LV_PART_MAIN);
+        lv_obj_set_style_border_width(btn, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0x888888), LV_PART_MAIN);
+        lv_obj_set_style_radius(btn, 6, LV_PART_MAIN);
+    }
     bsp_display_unlock();
 }
 

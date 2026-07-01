@@ -34,6 +34,7 @@ public:
     void set_exec_text(const char *text);
     void set_wifi_text(const char *text);
     static void wifi_btn_click_cb(lv_event_t *e);
+    recognition::WhoRecognition *get_recognition() { return m_recognition; }
 };
 } // namespace app
 } // namespace who

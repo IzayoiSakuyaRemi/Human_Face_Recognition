@@ -34,21 +34,24 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
 
     bsp_display_lock(0);
     m_label = create_lvgl_label("", &montserrat_bold_26);
-    const lv_font_t *font = lv_obj_get_style_text_font(m_label, LV_PART_MAIN);
-    lv_obj_align(m_label, LV_ALIGN_TOP_MID, 0, font->line_height);
+    lv_obj_align(m_label, LV_ALIGN_LEFT_MID, 10, 0);
 
-    // 状态标签 — 左上角，用于显示语音指令状态
-    // 注意: montserrat 西文字体不支持中文，需后续嵌入中文字库
+    // 语音指令状态 — 左下角
     m_status_label = create_lvgl_label("Cmd: Open Door", &montserrat_bold_20, {255, 255, 255});
-    lv_obj_align(m_status_label, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_align(m_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
 
-    // 执行许可标签 — 状态标签下方
+    // 执行许可标签 — 状态标签上方
     m_exec_label = create_lvgl_label("", &montserrat_bold_20, {0, 255, 0});
-    lv_obj_align(m_exec_label, LV_ALIGN_TOP_LEFT, 10, 40);
+    lv_obj_align(m_exec_label, LV_ALIGN_BOTTOM_LEFT, 10, -35);
 
-    // WiFi 按钮 — 和 recognize/enroll/delete 同款，右下角
+    // WiFi 按钮 — 右边栏，三个按钮下方
     m_wifi_label = create_lvgl_btn("WiFi: Off", &montserrat_bold_26);
-    lv_obj_align(m_wifi_label, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+    lv_obj_align(m_wifi_label, LV_ALIGN_TOP_RIGHT, -10, 240);
+    lv_obj_set_style_bg_color(m_wifi_label, lv_color_hex(0x224466), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(m_wifi_label, LV_OPA_80, LV_PART_MAIN);
+    lv_obj_set_style_border_width(m_wifi_label, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(m_wifi_label, lv_color_hex(0x4488cc), LV_PART_MAIN);
+    lv_obj_set_style_radius(m_wifi_label, 6, LV_PART_MAIN);
     lv_obj_add_event_cb(m_wifi_label, wifi_btn_click_cb, LV_EVENT_CLICKED, nullptr);
     bsp_display_unlock();
 

@@ -3,6 +3,7 @@
 #if !BSP_CONFIG_NO_GRAPHIC_LIB
 namespace who {
 namespace lcd {
+bool WhoLCD::s_skip_hw_init = false;
 #if CONFIG_IDF_TARGET_ESP32S3
 void WhoLCD::init(const lvgl_port_cfg_t &lvgl_port_cfg)
 {
@@ -95,6 +96,7 @@ void WhoLCD::init(const lvgl_port_cfg_t &lvgl_port_cfg)
 }
 void WhoLCD::deinit()
 {
+    if (s_skip_hw_init) return;  // Display managed externally (brookesia)
     bsp_display_stop(m_disp);
     // only a workaround, i2c should not deinitialized by bsp_display.
     ESP_ERROR_CHECK(bsp_i2c_init());

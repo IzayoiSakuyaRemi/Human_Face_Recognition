@@ -18,13 +18,23 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "esp_brookesia.hpp"
+#include "who_lvgl_lcd.hpp"
+#include "face_recognition_app.hpp"
+#include "settings_app.hpp"
 #include <cstring>
 
 extern char g_last_recog_face[64];
 extern char g_wifi_ip[32];
 
 static const char *TAG = "app_main";
-static who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
+who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
+bool g_voice_paused = false;
+
+// Brookesia globals
+static ESP_Brookesia_Phone *g_phone = nullptr;
+static lv_obj_t *g_phone_home_scr = nullptr;
+lv_obj_t *g_camera_scr = nullptr;
 
 // 配网状态 — 供 esp-who display 初始化后读取
 static char g_wifi_status[128] = "Starting...";
@@ -36,6 +46,11 @@ static void wifi_prov_status_cb(const char *status, bool done)
     ESP_LOGI(TAG, "WiFi: %s", status);
     if (g_recognition_app) {
         g_recognition_app->set_wifi_text(status);
+    }
+    // Update brookesia status bar WiFi icon
+    if (g_phone) {
+        int level = done ? 3 : 0;  // 3=connected, 0=disconnected
+        g_phone->getHome().getStatusBar()->setWifiIconState(level);
     }
     (void)done;
 }
@@ -71,6 +86,7 @@ static void voice_recognition_task(void *arg)
         esp_codec_dev_read(g_mic_handle, buffer, chunksize * sizeof(int16_t));
         read_count++;
         int64_t now = esp_timer_get_time();
+        if (g_voice_paused) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         if (now - last_log > 1000000) {
             int nz = 0;
             for (int i = 0; i < chunksize; i++) if (buffer[i] != 0) nz++;
@@ -131,6 +147,16 @@ static void voice_recognition_task(void *arg)
     }
     free(buffer);
     vTaskDelete(NULL);
+}
+
+static void on_clock_update_cb(lv_timer_t *timer)
+{
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    auto *phone = (ESP_Brookesia_Phone *)timer->user_data;
+    phone->getHome().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
 }
 
 extern "C" void app_main(void)
@@ -221,7 +247,100 @@ extern "C" void app_main(void)
         vTaskPrioritySet(NULL, 5);
     }
 
-    // ---- Create Recognition App (esp-who initializes display internally) ----
+    // ---- Initialize LVGL + Brookesia Phone UI ----
+    // Set skip flag BEFORE creating recognition app (prevents WhoLCD from re-initializing LVGL)
+    who::lcd::WhoLCD::s_skip_hw_init = true;
+
+    // Initialize LVGL display (same config as WhoLCD::init for ESP32P4)
+    {
+        lvgl_port_cfg_t lvgl_port_cfg = {
+            .task_priority = 5,
+            .task_stack = 8192,
+            .task_affinity = -1,
+            .task_max_sleep_ms = 500,
+            .timer_period_ms = 5,
+        };
+        bsp_display_cfg_t cfg = {
+            .lvgl_port_cfg = lvgl_port_cfg,
+            .buffer_size = BSP_LCD_H_RES * 100,  // 1024*100=102400 pixels, smoother camera
+            .double_buffer = 1,  // enable double buffering for async DMA flush
+            .hw_cfg = {
+                .dsi_bus = {
+                    .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
+                    .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS,
+                }
+            },
+            .flags = {
+                .buff_dma = true,
+                .buff_spiram = false,
+                .sw_rotate = true,
+            }
+        };
+        lv_display_t *disp = bsp_display_start_with_config(&cfg);
+        bsp_display_backlight_on();
+
+        // Force GPIO 20 as backlight control (override BSP default GPIO 26)
+        gpio_set_direction(GPIO_NUM_20, GPIO_MODE_OUTPUT);
+        gpio_set_level(GPIO_NUM_20, 1);
+
+        // Create Phone UI shell
+        bsp_display_lock(0);
+        g_phone = new ESP_Brookesia_Phone(disp);
+        auto *stylesheet = new ESP_Brookesia_PhoneStylesheet_t(
+            ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET());
+        g_phone->addStylesheet(stylesheet);
+        g_phone->activateStylesheet(stylesheet);
+        delete stylesheet;
+
+        g_phone->setTouchDevice(bsp_display_get_input_dev());
+        g_phone->registerLvLockCallback(
+            (ESP_Brookesia_GUI_LockCallback_t)(bsp_display_lock), 0);
+        g_phone->registerLvUnlockCallback(
+            (ESP_Brookesia_GUI_UnlockCallback_t)(bsp_display_unlock));
+        g_phone->begin();
+
+        // Install Camera App
+        auto *camera_app = new FaceRecognitionApp();
+        g_phone->installApp(camera_app);
+
+        // Install Settings App
+        auto *settings_app = new SettingsApp();
+        g_phone->installApp(settings_app);
+
+        // Clock update timer
+        lv_timer_create(on_clock_update_cb, 1000, g_phone);
+
+        // Save desktop screen BEFORE creating camera UI on a dedicated screen
+        lv_obj_t *home_scr = lv_screen_active();
+        g_phone_home_scr = home_scr;
+
+        // Create a dedicated screen for camera and load it temporarily
+        // so WhoRecognitionAppLCD creates everything on it (not on desktop)
+        g_camera_scr = lv_obj_create(NULL);
+        lv_screen_load(g_camera_scr);
+
+        // Add Exit button (bottom-right, next to WiFi) to return to desktop
+        {
+            lv_obj_t *btn_exit = lv_button_create(g_camera_scr);
+            lv_obj_t *label = lv_label_create(btn_exit);
+            lv_label_set_text(label, "Exit");
+            lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, LV_PART_MAIN);
+            lv_obj_center(label);
+            lv_obj_align(btn_exit, LV_ALIGN_TOP_RIGHT, -10, 300);
+            lv_obj_set_style_bg_color(btn_exit, lv_color_hex(0x662222), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(btn_exit, LV_OPA_80, LV_PART_MAIN);
+            lv_obj_set_style_border_width(btn_exit, 2, LV_PART_MAIN);
+            lv_obj_set_style_border_color(btn_exit, lv_color_hex(0xcc4444), LV_PART_MAIN);
+            lv_obj_set_style_radius(btn_exit, 6, LV_PART_MAIN);
+            lv_obj_add_event_cb(btn_exit, [](lv_event_t *e) {
+                if (g_phone_home_scr) lv_screen_load(g_phone_home_scr);
+            }, LV_EVENT_CLICKED, nullptr);
+        }
+
+        bsp_display_unlock();
+    }
+
+    // ---- Create Recognition App (on camera_scr, not desktop) ----
     auto recognition_app = new WhoRecognitionAppLCD(frame_cap);
     g_recognition_app = recognition_app;
 
@@ -249,6 +368,10 @@ extern "C" void app_main(void)
         *p = voice_params;
         xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 8192, p, 2, NULL, 0);
     }
+
+    // Switch back to desktop — camera runs on background screen
+    // Camera preview will show when user clicks Camera icon (Phase 2.2)
+    if (g_phone_home_scr) lv_screen_load(g_phone_home_scr);
 
     recognition_app->run();
 }

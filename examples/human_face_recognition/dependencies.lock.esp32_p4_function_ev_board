@@ -33,6 +33,24 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.5
+  espressif/esp-brookesia:
+    component_hash: da224da7a829bb930793c0c779b44227238a57191ca360908c8f2b051d220223
+    dependencies:
+    - name: espressif/esp-lib-utils
+      registry_url: https://components.espressif.com
+      require: public
+      version: 0.2.*
+    - name: idf
+      require: private
+      version: '>=5.3'
+    - name: lvgl/lvgl
+      registry_url: https://components.espressif.com
+      require: public
+      version: 9.2.*
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.5.0
   espressif/esp-dl:
     component_hash: 5130cf5ba89cb43865da942ddf23b39b1520855907cd91b68d3ad65dcf2305b6
     dependencies:
@@ -69,6 +87,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.7.0
+  espressif/esp-lib-utils:
+    component_hash: 9e81fa27e3a8292bed95d91754ebcb8f27f47117328b0b646446f29fc5a847fb
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.1'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.2.3
   espressif/esp-sr:
     component_hash: c518b25995cf03021a09442feedb7e40acba9f15d6aa903ebdfe0f657b08197b
     dependencies:
@@ -385,14 +413,15 @@ dependencies:
       type: idf
     version: 5.5.4
   lvgl/lvgl:
-    component_hash: 17e68bfd21f0edf4c3ee838e2273da840bf3930e5dbc3bfa6c1190c3aed41f9f
+    component_hash: 096c69af22eaf8a2b721e3913da91918c5e6bf1a762a113ec01f401aa61337a0
     dependencies: []
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 9.4.0
+    version: 9.2.2
 direct_dependencies:
 - espressif/cmake_utilities
+- espressif/esp-brookesia
 - espressif/esp-dl
 - espressif/esp-sr
 - espressif/esp32_p4_function_ev_board
@@ -409,6 +438,6 @@ direct_dependencies:
 - espressif/usb_host_uvc
 - idf
 - lvgl/lvgl
-manifest_hash: aa3488dfb6001898fa66ba1f688f6657ed19284cf23b4ed8d149c3ed422d81bd
+manifest_hash: 363d39c43c60927ae80a70c97e09635d0be915d4de4a403939c8b26c239561b2
 target: esp32p4
 version: 2.0.0
