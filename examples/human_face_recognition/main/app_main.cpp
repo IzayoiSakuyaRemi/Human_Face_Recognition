@@ -197,8 +197,8 @@ static void voice_recognition_task(void *arg)
 
                 // Every voice command triggers face recognition
                 if (g_recog_event_group) {
-                    // Skip fewer frames after detection (30 = ~1s worth)
-                    g_skip_detect_count = 30;
+                    // Skip fewer frames after detection (15 = ~500ms)
+                    g_skip_detect_count = 15;
                     xEventGroupSetBits(g_recog_event_group, 32);
                 }
 
@@ -223,8 +223,18 @@ static void voice_recognition_task(void *arg)
                              cmd, who, result);
                     report_event("voice_command", json_buf);
                 }
+                // Reset model for next utterance (like xiaozhi CustomWakeWord does)
+                multinet->clean(mn_data);
+            } else if (state == ESP_MN_STATE_TIMEOUT) {
+                // MultiNet timed out (no command matched within duration window).
+                // Must clean state machine or it stays stuck in TIMEOUT forever.
+                ESP_LOGD(TAG, "MultiNet timeout, resetting state");
+                multinet->clean(mn_data);
             }
             xSemaphoreGive(g_espdl_mutex);
+        } else {
+            // Mutex held by face recognition — audio frame dropped
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
         taskYIELD();
     }
