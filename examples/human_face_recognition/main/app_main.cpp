@@ -23,6 +23,7 @@
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
 #include <cstring>
+#include <cmath>
 
 extern char g_last_recog_face[64];
 extern char g_wifi_ip[32];
@@ -63,6 +64,33 @@ static esp_codec_dev_handle_t g_mic_handle = nullptr;
 static SemaphoreHandle_t g_espdl_mutex = nullptr;
 static volatile int g_skip_detect_count = 0;
 
+// Simple VAD + AGC state for voice preprocessing
+struct VoiceAudioState {
+    float noise_floor = 0.0f;       // running average of quiet energy
+    float speech_energy = 0.0f;     // running average of speech energy
+    int silence_frames = 0;         // consecutive silence frames
+    int speech_frames = 0;          // consecutive speech frames
+    bool is_speaking = false;
+};
+static VoiceAudioState g_voice_audio;
+
+// Apply simple AGC: normalize each frame to a target RMS level
+static void apply_agc(int16_t *buf, int len, float target_rms = 2000.0f) {
+    float sum = 0;
+    for (int i = 0; i < len; i++) sum += (float)buf[i] * buf[i];
+    float rms = sqrtf(sum / len);
+    if (rms < 10.0f) return;  // too quiet, don't amplify noise
+    float gain = target_rms / rms;
+    if (gain > 5.0f) gain = 5.0f;   // limit max gain to avoid amplifying noise
+    if (gain < 0.5f) gain = 0.5f;   // limit min gain
+    for (int i = 0; i < len; i++) {
+        float s = buf[i] * gain;
+        if (s > 32767) s = 32767;
+        if (s < -32768) s = -32768;
+        buf[i] = (int16_t)s;
+    }
+}
+
 struct voice_task_params_t {
     esp_mn_iface_t *multinet;
     model_iface_data_t *mn_data;
@@ -77,27 +105,83 @@ static void voice_recognition_task(void *arg)
     int chunksize = p->chunksize;
     free(p);
 
-    ESP_LOGI(TAG, "Voice ready: chunksize=%d, listening...", chunksize);
+    // BSP codec may configure I2S as MONO or STEREO depending on version.
+    // We read chunksize mono samples and let the driver handle the format.
+    int read_bytes = chunksize * sizeof(int16_t);
+    int16_t *audio_buf = (int16_t *)malloc(read_bytes);
+    if (!audio_buf) {
+        ESP_LOGE(TAG, "Voice: buffer alloc failed");
+        vTaskDelete(NULL);
+        return;
+    }
 
-    int16_t *buffer = (int16_t *)malloc(chunksize * sizeof(int16_t));
+    ESP_LOGI(TAG, "Voice ready: chunksize=%d mono samples, listening...", chunksize);
+
     int64_t last_log = 0;
     int read_count = 0;
-    while (g_mic_handle && buffer) {
-        esp_codec_dev_read(g_mic_handle, buffer, chunksize * sizeof(int16_t));
+    while (g_mic_handle) {
+        // esp_codec_dev_read returns ESP_CODEC_DEV_OK (0) on success,
+        // NOT the number of bytes read! The actual data is in audio_buf.
+        int ret = esp_codec_dev_read(g_mic_handle, audio_buf, read_bytes);
         read_count++;
         int64_t now = esp_timer_get_time();
+
+        if (ret != 0) {
+            ESP_LOGW(TAG, "Codec read error: %d, retrying...", ret);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         if (g_voice_paused) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+
         if (now - last_log > 1000000) {
             int nz = 0;
-            for (int i = 0; i < chunksize; i++) if (buffer[i] != 0) nz++;
-            ESP_LOGI(TAG, "Codec read: %d calls/sec, nonzero=%d/%d", read_count, nz, chunksize);
+            for (int i = 0; i < chunksize; i++) if (audio_buf[i] != 0) nz++;
+            ESP_LOGI(TAG, "Voice: %d reads/sec, nonzero=%d/%d", read_count, nz, chunksize);
             read_count = 0;
             last_log = now;
         }
+
+        // ---- Simple AGC: normalize audio volume ----
+        apply_agc(audio_buf, chunksize, 2000.0f);
+
+        // ---- Simple energy-based VAD: only feed speech to MultiNet ----
+        float frame_energy = 0;
+        for (int i = 0; i < chunksize; i++) frame_energy += (float)audio_buf[i] * audio_buf[i];
+        frame_energy /= chunksize;  // mean squared value
+
+        // Update noise floor (slow decay, fast rise)
+        if (frame_energy < g_voice_audio.noise_floor || g_voice_audio.noise_floor == 0) {
+            g_voice_audio.noise_floor = frame_energy;
+        } else {
+            g_voice_audio.noise_floor += (frame_energy - g_voice_audio.noise_floor) * 0.001f;
+        }
+
+        // Speech detection: energy > 3× noise floor
+        bool is_speech_frame = (frame_energy > g_voice_audio.noise_floor * 3.0f &&
+                                frame_energy > 100.0f);  // absolute minimum
+        if (is_speech_frame) {
+            g_voice_audio.silence_frames = 0;
+            g_voice_audio.speech_frames++;
+        } else {
+            g_voice_audio.speech_frames = 0;
+            g_voice_audio.silence_frames++;
+        }
+
+        // Hysteresis: need 3 frames to start, 10 frames to stop
+        if (g_voice_audio.speech_frames >= 3 && !g_voice_audio.is_speaking) {
+            g_voice_audio.is_speaking = true;
+            ESP_LOGI(TAG, "Voice: VAD ON (energy=%.0f, noise=%.0f)",
+                     frame_energy, g_voice_audio.noise_floor);
+        } else if (g_voice_audio.silence_frames >= 10 && g_voice_audio.is_speaking) {
+            g_voice_audio.is_speaking = false;
+            ESP_LOGI(TAG, "Voice: VAD OFF");
+        }
+
         if (g_skip_detect_count > 0) {
             g_skip_detect_count = g_skip_detect_count - 1;
         } else if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(100))) {
-            esp_mn_state_t state = multinet->detect(mn_data, buffer);
+            esp_mn_state_t state = multinet->detect(mn_data, audio_buf);
             if (state == ESP_MN_STATE_DETECTED) {
                 esp_mn_results_t *r = multinet->get_results(mn_data);
                 const char *cmd = "Cmd: Unknown";
@@ -108,16 +192,15 @@ static void voice_recognition_task(void *arg)
                     case 4: cmd = "Cmd: Close Door"; break;
                     case 5: cmd = "Cmd: Identify"; break;
                 }
-                ESP_LOGI(TAG, "Detected: %s", cmd);
+                ESP_LOGI(TAG, "Detected: %s (prob=%.2f)", cmd,
+                         r->num > 0 ? r->prob[0] : 0.0f);
 
                 // Every voice command triggers face recognition
                 if (g_recog_event_group) {
-                    g_skip_detect_count = 100;
+                    // Skip fewer frames after detection (30 = ~1s worth)
+                    g_skip_detect_count = 30;
                     xEventGroupSetBits(g_recog_event_group, 32);
                 }
-
-                // Wait briefly for recognition to complete
-                vTaskDelay(pdMS_TO_TICKS(1500));
 
                 bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
                 const char *who = authorized ? g_last_recog_face : "stranger";
@@ -145,7 +228,7 @@ static void voice_recognition_task(void *arg)
         }
         taskYIELD();
     }
-    free(buffer);
+    free(audio_buf);
     vTaskDelete(NULL);
 }
 
@@ -234,7 +317,7 @@ extern "C" void app_main(void)
                 ESP_LOGI(TAG, "MultiNet model: %s", mn_name);
                 voice_params.multinet = esp_mn_handle_from_name(mn_name);
                 voice_params.mn_data = voice_params.multinet->create(mn_name, 6000);
-                voice_params.multinet->set_det_threshold(voice_params.mn_data, 0.10);
+                voice_params.multinet->set_det_threshold(voice_params.mn_data, 0.35);
                 esp_mn_commands_add(1, "da kai dian shi");
                 esp_mn_commands_add(2, "guan bi dian shi");
                 esp_mn_commands_add(3, "da kai men");
@@ -367,7 +450,7 @@ extern "C" void app_main(void)
     if (voice_params.multinet) {
         voice_task_params_t *p = (voice_task_params_t *)malloc(sizeof(voice_task_params_t));
         *p = voice_params;
-        xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 8192, p, 2, NULL, 0);
+        xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 8192, p, 5, NULL, 0);
     }
 
     // Switch back to desktop — camera runs on background screen
