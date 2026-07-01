@@ -5,7 +5,6 @@
 
 extern EventGroupHandle_t g_recog_event_group;
 char g_last_recog_face[64] = "Unknown";
-void (*g_on_wifi_btn_click)() = nullptr;  // defined in who::app namespace
 
 LV_FONT_DECLARE(montserrat_bold_26);
 LV_FONT_DECLARE(montserrat_bold_20);
@@ -43,16 +42,6 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     // 执行许可标签 — 状态标签上方
     m_exec_label = create_lvgl_label("", &montserrat_bold_20, {0, 255, 0});
     lv_obj_align(m_exec_label, LV_ALIGN_BOTTOM_LEFT, 10, -35);
-
-    // WiFi 按钮 — 右边栏，三个按钮下方
-    m_wifi_label = create_lvgl_btn("WiFi: Off", &montserrat_bold_26);
-    lv_obj_align(m_wifi_label, LV_ALIGN_TOP_RIGHT, -10, 240);
-    lv_obj_set_style_bg_color(m_wifi_label, lv_color_hex(0x224466), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(m_wifi_label, LV_OPA_80, LV_PART_MAIN);
-    lv_obj_set_style_border_width(m_wifi_label, 2, LV_PART_MAIN);
-    lv_obj_set_style_border_color(m_wifi_label, lv_color_hex(0x4488cc), LV_PART_MAIN);
-    lv_obj_set_style_radius(m_wifi_label, 6, LV_PART_MAIN);
-    lv_obj_add_event_cb(m_wifi_label, wifi_btn_click_cb, LV_EVENT_CLICKED, nullptr);
     bsp_display_unlock();
 
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -93,7 +82,6 @@ WhoRecognitionAppLCD::~WhoRecognitionAppLCD()
     delete m_detect_result_lcd_disp;
     bsp_display_lock(0);
     lv_obj_del(m_exec_label);
-    lv_obj_del(m_wifi_label);
     lv_obj_del(m_status_label);
     lv_obj_del(m_label);
     bsp_display_unlock();
@@ -155,16 +143,5 @@ void WhoRecognitionAppLCD::set_exec_text(const char *text)
     bsp_display_unlock();
 }
 
-void WhoRecognitionAppLCD::set_wifi_text(const char *text)
-{
-    bsp_display_lock(0);
-    lv_obj_t *label = lv_obj_get_child(m_wifi_label, 0);
-    if (label) lv_label_set_text(label, text);
-    bsp_display_unlock();
-}
-void WhoRecognitionAppLCD::wifi_btn_click_cb(lv_event_t *e)
-{
-    if (g_on_wifi_btn_click) g_on_wifi_btn_click();
-}
 } // namespace app
 } // namespace who

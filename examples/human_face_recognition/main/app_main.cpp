@@ -2,7 +2,6 @@
 #include "who_recognition_app_lcd.hpp"
 #include "who_recognition_app_term.hpp"
 #include "who_spiflash_fatfs.hpp"
-#include "wifi_provisioning.hpp"
 #include "event_reporter.hpp"
 #include "driver/gpio.h"
 #include "lvgl.h"
@@ -15,19 +14,21 @@
 #include "model_path.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_brookesia.hpp"
 #include "who_lvgl_lcd.hpp"
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
+#include "wallpaper.h"
+#include <cstdio>
 #include <cstring>
 #include <cmath>
 
 extern char g_last_recog_face[64];
-extern char g_wifi_ip[32];
-
 static const char *TAG = "app_main";
 who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
 bool g_voice_paused = false;
@@ -37,24 +38,10 @@ static ESP_Brookesia_Phone *g_phone = nullptr;
 static lv_obj_t *g_phone_home_scr = nullptr;
 lv_obj_t *g_camera_scr = nullptr;
 
-// 配网状态 — 供 esp-who display 初始化后读取
-static char g_wifi_status[128] = "Starting...";
-
-// --- 配网状态回调 ---
-static void wifi_prov_status_cb(const char *status, bool done)
-{
-    strncpy(g_wifi_status, status, sizeof(g_wifi_status) - 1);
-    ESP_LOGI(TAG, "WiFi: %s", status);
-    if (g_recognition_app) {
-        g_recognition_app->set_wifi_text(status);
-    }
-    // Update brookesia status bar WiFi icon
-    if (g_phone) {
-        int level = done ? 3 : 0;  // 3=connected, 0=disconnected
-        g_phone->getHome().getStatusBar()->setWifiIconState(level);
-    }
-    (void)done;
-}
+// Dynamic wallpaper tracking (for cleanup on switch)
+// Non-static so SettingsApp can free boot-time allocation
+lv_image_dsc_t *g_active_wp_dsc = nullptr;
+void *g_active_wp_data = nullptr;
 
 using namespace who::frame_cap;
 using namespace who::app;
@@ -116,6 +103,18 @@ static void voice_recognition_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Voice ready: chunksize=%d mono samples, listening...", chunksize);
+
+    // Memory report
+    ESP_LOGI(TAG, "===== Memory Report =====");
+    ESP_LOGI(TAG, "Internal DRAM: free=%lu KB / largest=%lu KB",
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
+             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
+    ESP_LOGI(TAG, "PSRAM:        free=%lu KB / largest=%lu KB",
+             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024,
+             heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024);
+    ESP_LOGI(TAG, "Total free:   %lu KB",
+             heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024);
+    ESP_LOGI(TAG, "=========================");
 
     int64_t last_log = 0;
     int read_count = 0;
@@ -283,10 +282,6 @@ extern "C" void app_main(void)
 #elif CONFIG_DB_SPIFFS
     ESP_ERROR_CHECK(bsp_spiffs_mount());
 #endif
-#if CONFIG_DB_FATFS_SDCARD || CONFIG_HUMAN_FACE_DETECT_MODEL_IN_SDCARD || CONFIG_HUMAN_FACE_FEAT_MODEL_IN_SDCARD
-    ESP_ERROR_CHECK(bsp_sdcard_mount());
-#endif
-
 #if CONFIG_IDF_TARGET_ESP32S3
     auto frame_cap = get_dvp_frame_cap_pipeline();
 #elif CONFIG_IDF_TARGET_ESP32P4
@@ -382,6 +377,65 @@ extern "C" void app_main(void)
         g_phone = new ESP_Brookesia_Phone(disp);
         auto *stylesheet = new ESP_Brookesia_PhoneStylesheet_t(
             ESP_BROOKESIA_PHONE_1024_600_DARK_STYLESHEET());
+
+        // Try loading wallpaper: NVS path → /sdcard/wallpaper.rgb565 → default
+        {
+            const void *wp_resource = &wallpaper_dsc;  // fallback
+
+            // Helper: load a .rgb565 file into lv_image_dsc_t
+            auto try_load = [](const char *path) -> lv_image_dsc_t * {
+                FILE *f = fopen(path, "rb");
+                if (!f) return nullptr;
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                if (sz != 1024 * 600 * 2) { fclose(f); return nullptr; }
+                void *data = malloc(sz);
+                if (!data) { fclose(f); return nullptr; }
+                fseek(f, 0, SEEK_SET);
+                fread(data, 1, sz, f);
+                fclose(f);
+                lv_image_dsc_t *dsc = (lv_image_dsc_t *)malloc(sizeof(lv_image_dsc_t));
+                if (!dsc) { free(data); return nullptr; }
+                dsc->header.cf     = LV_COLOR_FORMAT_RGB565;
+                dsc->header.w      = 1024;
+                dsc->header.h      = 600;
+                dsc->header.stride = 2048;
+                dsc->data           = (const uint8_t *)data;
+                dsc->data_size      = (uint32_t)sz;
+                g_active_wp_dsc  = dsc;
+                g_active_wp_data = data;
+                return dsc;
+            };
+
+            // Step 1: check NVS for user-chosen wallpaper
+            nvs_handle_t nvs;
+            if (nvs_open("wallpaper", NVS_READONLY, &nvs) == ESP_OK) {
+                char path[256] = {0};
+                size_t len = sizeof(path);
+                if (nvs_get_str(nvs, "path", path, &len) == ESP_OK
+                    && strcmp(path, "default") != 0) {
+                    lv_image_dsc_t *dsc = try_load(path);
+                    if (dsc) {
+                        wp_resource = dsc;
+                        ESP_LOGI(TAG, "Wallpaper from NVS: %s", path);
+                    }
+                }
+                nvs_close(nvs);
+            }
+
+            // Step 2: if still default, try flash wallpaper.rgb565
+            if (wp_resource == &wallpaper_dsc) {
+                lv_image_dsc_t *dsc = try_load("/spiflash/wallpaper.rgb565");
+                if (dsc) {
+                    wp_resource = dsc;
+                    ESP_LOGI(TAG, "Wallpaper from flash: /spiflash/wallpaper.rgb565");
+                }
+            }
+
+            stylesheet->core.home.background.wallpaper_image_resource =
+                ESP_BROOKESIA_STYLE_IMAGE(wp_resource);
+        }
+
         g_phone->addStylesheet(stylesheet);
         g_phone->activateStylesheet(stylesheet);
         delete stylesheet;
@@ -437,13 +491,6 @@ extern "C" void app_main(void)
     // ---- Create Recognition App (on camera_scr, not desktop) ----
     auto recognition_app = new WhoRecognitionAppLCD(frame_cap);
     g_recognition_app = recognition_app;
-
-    // WiFi button: click to start provisioning
-    extern void (*g_on_wifi_btn_click)();
-    g_on_wifi_btn_click = []() {
-        wifi_provisioning_start_async(wifi_prov_status_cb);
-    };
-    recognition_app->set_wifi_text("WiFi: Off");
 
     g_espdl_mutex = xSemaphoreCreateMutex();
 

@@ -17,6 +17,12 @@
 
 // Global: last known IP string for app_main to read
 char g_wifi_ip[32] = {0};
+// Global: last known SSID
+char g_wifi_ssid[33] = {0};
+
+bool wifi_is_connected() {
+    return g_wifi_ssid[0] != '\0';
+}
 
 static const char *TAG = "wifi_prov";
 
@@ -165,7 +171,8 @@ static bool wifi_try_connect(const char *ssid, const char *pass) {
     EventBits_t bits = xEventGroupWaitBits(s_evt, BIT_CONNECTED,
                                            pdTRUE, pdFALSE, pdMS_TO_TICKS(CONNECT_TIMEOUT_SEC * 1000));
     if (bits & BIT_CONNECTED) {
-        ESP_LOGI(TAG, "WiFi connected!");
+        ESP_LOGI(TAG, "WiFi connected to %s!", ssid);
+        strncpy(g_wifi_ssid, ssid, sizeof(g_wifi_ssid) - 1);
         if (s_status_cb) s_status_cb("WiFi Connected", true);
         return true;
     }
@@ -342,8 +349,11 @@ esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb) {
         && strlen(saved_ssid) >= 2 && !strchr(saved_ssid, '"') && !strchr(saved_ssid, ':')) {
         ESP_LOGI(TAG, "Found saved: %s", saved_ssid);
         if (s_status_cb) s_status_cb("Connecting to saved WiFi...", false);
-        if (wifi_try_connect(saved_ssid, saved_pass))
+        if (wifi_try_connect(saved_ssid, saved_pass)) {
+            memcpy(g_wifi_ssid, saved_ssid, sizeof(g_wifi_ssid));
+            g_wifi_ssid[sizeof(g_wifi_ssid) - 1] = '\0';
             return ESP_OK;
+        }
         // Failed — erase bad creds
         nvs_erase_creds();
     }

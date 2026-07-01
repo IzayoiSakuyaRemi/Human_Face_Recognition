@@ -2,12 +2,21 @@
 #include <esp_err.h>
 #include <string>
 
+// Global: last known IP string (e.g. "WiFi: 192.168.1.100")
+extern char g_wifi_ip[32];
+
+// Global: last known SSID (populated on successful connect)
+extern char g_wifi_ssid[33];
+
 /**
  * WiFi 配网状态回调
  * @param status  状态字符串，用于 LVGL 标签显示
  * @param done    配网完成 (WiFi 已连接) 时为 true
  */
 typedef void (*wifi_prov_status_cb_t)(const char *status, bool done);
+
+/** Check if WiFi is currently connected */
+bool wifi_is_connected();
 
 /**
  * 启动 WiFi 配网流程 (模仿小智)

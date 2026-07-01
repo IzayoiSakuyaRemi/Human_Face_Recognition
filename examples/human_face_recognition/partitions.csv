@@ -4,6 +4,6 @@
 
 nvs,       data,  nvs,      0x9000,      24K,
 phy_init,  data,  phy,      0xf000,      4K,
-factory,   app,   factory,  0x010000,    7500K,
+factory,   app,   factory,  0x010000,    7900K,
 model,     data,  spiffs,   ,            4096K,
 storage,   data,  fat,      ,            3M,
