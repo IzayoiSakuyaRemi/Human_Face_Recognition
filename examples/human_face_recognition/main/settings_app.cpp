@@ -134,7 +134,10 @@ bool SettingsApp::close()
 // ============================================================
 void SettingsApp::refresh_face_list()
 {
-    if (!m_face_count_label) return;
+    if (!m_face_list) return;
+
+    // Clear old content
+    lv_obj_clean(m_face_list);
 
     if (!g_recognition_app) {
         lv_label_set_text(m_face_count_label, "Camera app not available");
@@ -148,9 +151,60 @@ void SettingsApp::refresh_face_list()
         return;
     }
 
+    auto ids = fb->get_feat_ids();
     char buf[64];
-    snprintf(buf, sizeof(buf), "Enrolled faces: %d", fb->get_num_feats());
+    snprintf(buf, sizeof(buf), "Enrolled: %d faces", (int)ids.size());
     lv_label_set_text(m_face_count_label, buf);
+
+    for (auto id : ids) {
+        lv_obj_t *row = lv_obj_create(m_face_list);
+        lv_obj_set_size(row, lv_pct(95), 45);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x2a2a3e), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(0x444466), 0);
+        lv_obj_set_style_radius(row, 4, 0);
+        lv_obj_set_style_pad_left(row, 10, 0);
+        lv_obj_set_style_pad_right(row, 10, 0);
+
+        snprintf(buf, sizeof(buf), "Face ID: %d", id);
+        lv_obj_t *lbl = lv_label_create(row);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(lbl, &montserrat_bold_20, 0);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+        lv_obj_t *btn = lv_button_create(row);
+        lv_obj_set_size(btn, 70, 32);
+        lv_obj_align(btn, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x662222), 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0xcc4444), 0);
+        lv_obj_set_style_radius(btn, 4, 0);
+        lv_obj_t *btxt = lv_label_create(btn);
+        lv_label_set_text(btxt, "Del");
+        lv_obj_center(btxt);
+
+        // Store SettingsApp* in row, face_id in btn
+        lv_obj_set_user_data(row, this);
+        lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+            // Get the row parent to access stored SettingsApp*
+            lv_obj_t *row = lv_obj_get_parent(lv_event_get_target_obj(e));
+            auto *self = (SettingsApp *)lv_obj_get_user_data(row);
+            // Get face_id from the label text
+            lv_obj_t *label = lv_obj_get_child(row, 0);
+            const char *txt = lv_label_get_text(label);
+            int fid = 0;
+            if (txt && sscanf(txt, "Face ID: %d", &fid) == 1) {
+                if (g_recognition_app) {
+                    auto *r = g_recognition_app->get_recognition()->get_recognition_task();
+                    auto *f = r->get_recognizer();
+                    if (f) f->delete_feat((uint16_t)fid);
+                }
+                self->refresh_face_list();
+            }
+        }, LV_EVENT_CLICKED, nullptr);
+    }
 }
 
 void SettingsApp::create_face_page()
@@ -168,55 +222,45 @@ void SettingsApp::create_face_page()
     m_face_count_label = lv_label_create(m_face_scr);
     lv_obj_set_style_text_color(m_face_count_label, lv_color_hex(0xAAAAFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_face_count_label, &montserrat_bold_20, LV_PART_MAIN);
-    lv_obj_align(m_face_count_label, LV_ALIGN_TOP_LEFT, 20, 80);
+    lv_obj_align(m_face_count_label, LV_ALIGN_TOP_LEFT, 20, 60);
 
-    // Delete Last button
-    lv_obj_t *btn_last = lv_button_create(m_face_scr);
-    lv_obj_set_size(btn_last, 160, 40);
-    lv_obj_align(btn_last, LV_ALIGN_TOP_MID, -90, 140);
-    lv_obj_set_style_bg_color(btn_last, lv_color_hex(0x444466), LV_PART_MAIN);
-    lv_obj_set_style_border_width(btn_last, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(btn_last, lv_color_hex(0x8888AA), LV_PART_MAIN);
-    lv_obj_set_style_radius(btn_last, 6, LV_PART_MAIN);
-    lv_obj_t *ltxt = lv_label_create(btn_last);
-    lv_label_set_text(ltxt, "Delete Last");
-    lv_obj_center(ltxt);
-    lv_obj_add_event_cb(btn_last, [](lv_event_t *e) {
-        auto *self = (SettingsApp *)lv_event_get_user_data(e);
-        if (g_recognition_app) {
-            auto *recog = g_recognition_app->get_recognition()->get_recognition_task();
-            auto *fb = recog->get_recognizer();
-            if (fb) fb->delete_last_feat();
-        }
-        self->refresh_face_list();
-    }, LV_EVENT_CLICKED, this);
-
-    // Delete All button
+    // Clear All button
     lv_obj_t *btn_all = lv_button_create(m_face_scr);
-    lv_obj_set_size(btn_all, 160, 40);
-    lv_obj_align(btn_all, LV_ALIGN_TOP_MID, 90, 140);
-    lv_obj_set_style_bg_color(btn_all, lv_color_hex(0x662222), LV_PART_MAIN);
-    lv_obj_set_style_border_width(btn_all, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(btn_all, lv_color_hex(0xcc4444), LV_PART_MAIN);
-    lv_obj_set_style_radius(btn_all, 6, LV_PART_MAIN);
+    lv_obj_set_size(btn_all, 140, 36);
+    lv_obj_align(btn_all, LV_ALIGN_TOP_RIGHT, -20, 55);
+    lv_obj_set_style_bg_color(btn_all, lv_color_hex(0x662222), 0);
+    lv_obj_set_style_border_width(btn_all, 1, 0);
+    lv_obj_set_style_border_color(btn_all, lv_color_hex(0xcc4444), 0);
+    lv_obj_set_style_radius(btn_all, 6, 0);
     lv_obj_t *atxt = lv_label_create(btn_all);
     lv_label_set_text(atxt, "Clear All");
     lv_obj_center(atxt);
     lv_obj_add_event_cb(btn_all, [](lv_event_t *e) {
         auto *self = (SettingsApp *)lv_event_get_user_data(e);
         if (g_recognition_app) {
-            auto *recog = g_recognition_app->get_recognition()->get_recognition_task();
-            auto *fb = recog->get_recognizer();
-            if (fb) fb->clear_all_feats();
+            auto *r = g_recognition_app->get_recognition()->get_recognition_task();
+            auto *f = r->get_recognizer();
+            if (f) f->clear_all_feats();
         }
         self->refresh_face_list();
     }, LV_EVENT_CLICKED, this);
+
+    // Scrollable face list
+    m_face_list = lv_obj_create(m_face_scr);
+    lv_obj_set_size(m_face_list, lv_pct(90), lv_pct(60));
+    lv_obj_align(m_face_list, LV_ALIGN_TOP_MID, 0, 105);
+    lv_obj_set_style_bg_opa(m_face_list, LV_OPA_0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(m_face_list, 0, LV_PART_MAIN);
+    lv_obj_set_flex_flow(m_face_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(m_face_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(m_face_list, 4, LV_PART_MAIN);
+    lv_obj_add_flag(m_face_list, LV_OBJ_FLAG_SCROLLABLE);
 
     // Back button
     lv_obj_t *btn_back = lv_button_create(m_face_scr);
     lv_obj_set_size(btn_back, 80, 36);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, 10, -10);
-    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x444444), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x444444), 0);
     lv_obj_t *btxt = lv_label_create(btn_back);
     lv_label_set_text(btxt, "Back");
     lv_obj_center(btxt);

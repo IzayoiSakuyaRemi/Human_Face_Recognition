@@ -88,7 +88,7 @@ void WhoRecognitionCore::task()
                     if (ret == ESP_FAIL) {
                         m_recognition_result_cb("Failed to enroll.");
                     } else {
-                        m_recognition_result_cb(std::format("id: {} enrolled.", m_recognizer->get_num_feats()));
+                        m_recognition_result_cb(std::format("Enrolled. Total: {}", m_recognizer->get_num_feats()));
                     }
                 }
                 m_detect->set_detect_result_cb(m_detect_result_cb);
