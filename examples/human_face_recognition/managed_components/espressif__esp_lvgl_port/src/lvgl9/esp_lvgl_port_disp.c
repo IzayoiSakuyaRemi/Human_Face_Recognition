@@ -741,22 +741,23 @@ static void lvgl_port_flush_callback(lv_display_t *drv, const lv_area_t *area, u
     if ((disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_RGB || disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_DSI)
             && (disp_ctx->flags.direct_mode || disp_ctx->flags.full_refresh)) {
         if (lv_disp_flush_is_last(drv)) {
-#if 0  /* SW vertical flip replaced by HW mirror_y in BSP rotation config */
+            /* SW vertical flip — EK79007 MADCTL ignored (UPDN/SHLR pins hardwired).
+             * Optimized with uint32_t: 2 pixels per swap, 2x throughput vs uint16_t. */
             {
                 int w = lv_disp_get_hor_res(drv);
                 int h = lv_disp_get_ver_res(drv);
-                uint16_t *pixels = (uint16_t *)color_map;
+                uint32_t *p32 = (uint32_t *)color_map;
+                int w32 = w / 2;
                 for (int y = 0; y < h / 2; y++) {
-                    uint16_t *row_top = pixels + y * w;
-                    uint16_t *row_bot = pixels + (h - 1 - y) * w;
-                    for (int x = 0; x < w; x++) {
-                        uint16_t tmp = row_top[x];
-                        row_top[x] = row_bot[x];
-                        row_bot[x] = tmp;
+                    uint32_t *r1 = p32 + y * w32;
+                    uint32_t *r2 = p32 + (h - 1 - y) * w32;
+                    for (int x = 0; x < w32; x++) {
+                        uint32_t t = r1[x];
+                        r1[x] = r2[x];
+                        r2[x] = t;
                     }
                 }
             }
-#endif
             /* If the interface is I80 or SPI, this step cannot be used for drawing. */
             esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, 0, 0, lv_disp_get_hor_res(drv), lv_disp_get_ver_res(drv), color_map);
             /* Waiting for the last frame buffer to complete transmission */

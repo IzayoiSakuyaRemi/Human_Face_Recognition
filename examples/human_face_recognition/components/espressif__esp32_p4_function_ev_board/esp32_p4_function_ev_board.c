@@ -925,7 +925,7 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
         .rotation = {
             .swap_xy = false,
             .mirror_x = false,
-            .mirror_y = true,   // HW vertical flip — replaces SW flip in flush callback
+            .mirror_y = false,  // MADCTL bits ignored by EK79007 — see panel spec UPDN/SHLR pins
         },
 #if LVGL_VERSION_MAJOR >= 9
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
