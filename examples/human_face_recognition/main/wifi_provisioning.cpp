@@ -332,8 +332,11 @@ static bool parse_ssid_pass(const char *body) {
 }
 
 // ======================= Main flow =======================
+#define MAX_PROV_RETRIES 3
+
 esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb) {
     s_status_cb = status_cb;
+    if (s_evt) vEventGroupDelete(s_evt);
     s_evt = xEventGroupCreate();
 
     if (s_status_cb) s_status_cb("Init WiFi...", false);
@@ -343,79 +346,93 @@ esp_err_t wifi_provisioning_start(wifi_prov_status_cb_t status_cb) {
     esp_event_loop_create_default();
     wifi_init_once();
 
-    // 尝试已保存凭据
-    char saved_ssid[33] = {0}, saved_pass[65] = {0};
-    if (nvs_load_creds(saved_ssid, sizeof(saved_ssid), saved_pass, sizeof(saved_pass)) == ESP_OK
-        && strlen(saved_ssid) >= 2 && !strchr(saved_ssid, '"') && !strchr(saved_ssid, ':')) {
-        ESP_LOGI(TAG, "Found saved: %s", saved_ssid);
-        if (s_status_cb) s_status_cb("Connecting to saved WiFi...", false);
-        if (wifi_try_connect(saved_ssid, saved_pass)) {
-            memcpy(g_wifi_ssid, saved_ssid, sizeof(g_wifi_ssid));
-            g_wifi_ssid[sizeof(g_wifi_ssid) - 1] = '\0';
-            return ESP_OK;
+    for (int retry = 0; retry < MAX_PROV_RETRIES; retry++) {
+        if (retry > 0) {
+            ESP_LOGI(TAG, "Retry attempt %d/%d", retry + 1, MAX_PROV_RETRIES);
         }
-        // Failed — erase bad creds
-        nvs_erase_creds();
+
+        // 尝试已保存凭据 (仅第一次尝试时)
+        if (retry == 0) {
+            char saved_ssid[33] = {0}, saved_pass[65] = {0};
+            if (nvs_load_creds(saved_ssid, sizeof(saved_ssid), saved_pass, sizeof(saved_pass)) == ESP_OK
+                && strlen(saved_ssid) >= 2 && !strchr(saved_ssid, '"') && !strchr(saved_ssid, ':')) {
+                ESP_LOGI(TAG, "Found saved: %s", saved_ssid);
+                if (s_status_cb) s_status_cb("Connecting to saved WiFi...", false);
+                if (wifi_try_connect(saved_ssid, saved_pass)) {
+                    memcpy(g_wifi_ssid, saved_ssid, sizeof(g_wifi_ssid));
+                    g_wifi_ssid[sizeof(g_wifi_ssid) - 1] = '\0';
+                    return ESP_OK;
+                }
+                // Failed — erase bad creds
+                nvs_erase_creds();
+            }
+        }
+
+        // === SoftAP 配网模式 ===
+        ESP_LOGI(TAG, "Entering SoftAP config mode");
+        s_ap_mode = true;
+
+        esp_wifi_stop();
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+
+        if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
+
+        wifi_config_t ap_cfg = {};
+        strncpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid) - 1);
+        strncpy((char *)ap_cfg.ap.password, AP_PASSWORD, sizeof(ap_cfg.ap.password) - 1);
+        ap_cfg.ap.max_connection = 2;
+        ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        ap_cfg.ap.ssid_len = strlen(AP_SSID);
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+        ESP_ERROR_CHECK(esp_wifi_start());
+
+        char hint[128];
+        snprintf(hint, sizeof(hint), "Connect to %s / Pass:%s\nOpen http://192.168.4.1",
+                 AP_SSID, AP_PASSWORD);
+        ESP_LOGI(TAG, "%s", hint);
+        if (s_status_cb) s_status_cb(hint, false);
+
+        // 启动 HTTP 配网服务器
+        httpd_config_t httpd_cfg = HTTPD_DEFAULT_CONFIG();
+        httpd_cfg.lru_purge_enable = true;
+        httpd_cfg.stack_size = 8192;
+        httpd_handle_t httpd = NULL;
+        httpd_start(&httpd, &httpd_cfg);
+
+        httpd_uri_t uri_idx = { .uri = "/", .method = HTTP_GET, .handler = http_index_handler, .user_ctx = NULL };
+        httpd_uri_t uri_scn = { .uri = "/api/scan", .method = HTTP_GET, .handler = http_scan_handler, .user_ctx = NULL };
+        httpd_uri_t uri_cnn = { .uri = "/api/connect", .method = HTTP_POST, .handler = http_connect_handler, .user_ctx = NULL };
+        httpd_register_uri_handler(httpd, &uri_idx);
+        httpd_register_uri_handler(httpd, &uri_scn);
+        httpd_register_uri_handler(httpd, &uri_cnn);
+
+        // 等待用户通过网页提交配置
+        xEventGroupWaitBits(s_evt, BIT_CONFIG_DONE, pdFALSE, pdTRUE, portMAX_DELAY);
+
+        // 停止 HTTP 和 AP
+        httpd_stop(httpd);
+        esp_wifi_stop();
+        vTaskDelay(pdMS_TO_TICKS(500));
+
+        // 用新凭据连接
+        s_ap_mode = false;
+        if (s_status_cb) s_status_cb("Connecting to configured WiFi...", false);
+        if (wifi_try_connect(s_cfg_ssid, s_cfg_password))
+            return ESP_OK;
+
+        // 失败 — 如果不是最后一次尝试，擦除凭据并重试
+        ESP_LOGE(TAG, "Connection failed after config (attempt %d/%d)", retry + 1, MAX_PROV_RETRIES);
+        if (retry < MAX_PROV_RETRIES - 1) {
+            nvs_erase_creds();
+            if (s_status_cb) s_status_cb("WiFi Failed, retrying...", false);
+            vTaskDelay(pdMS_TO_TICKS(3000));
+        }
     }
 
-    // === SoftAP 配网模式 ===
-    ESP_LOGI(TAG, "Entering SoftAP config mode");
-    s_ap_mode = true;
-
-    esp_wifi_stop();
-    esp_wifi_set_mode(WIFI_MODE_APSTA);  // APSTA: STA can scan while AP runs
-
-    // 创建 AP netif（如果还没有）
-    if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
-
-    wifi_config_t ap_cfg = {};
-    strncpy((char *)ap_cfg.ap.ssid, AP_SSID, sizeof(ap_cfg.ap.ssid) - 1);
-    strncpy((char *)ap_cfg.ap.password, AP_PASSWORD, sizeof(ap_cfg.ap.password) - 1);
-    ap_cfg.ap.max_connection = 2;
-    ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    ap_cfg.ap.ssid_len = strlen(AP_SSID);
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    char hint[128];
-    snprintf(hint, sizeof(hint), "Connect to %s / Pass:%s\nOpen http://192.168.4.1",
-             AP_SSID, AP_PASSWORD);
-    ESP_LOGI(TAG, "%s", hint);
-    if (s_status_cb) s_status_cb(hint, false);
-
-    // 启动 HTTP 配网服务器
-    httpd_config_t httpd_cfg = HTTPD_DEFAULT_CONFIG();
-    httpd_cfg.lru_purge_enable = true;
-    httpd_cfg.stack_size = 8192;  // wifi_do_scan needs extra stack
-    httpd_handle_t httpd = NULL;
-    httpd_start(&httpd, &httpd_cfg);
-
-    httpd_uri_t uri_idx = { .uri = "/", .method = HTTP_GET, .handler = http_index_handler, .user_ctx = NULL };
-    httpd_uri_t uri_scn = { .uri = "/api/scan", .method = HTTP_GET, .handler = http_scan_handler, .user_ctx = NULL };
-    httpd_uri_t uri_cnn = { .uri = "/api/connect", .method = HTTP_POST, .handler = http_connect_handler, .user_ctx = NULL };
-    httpd_register_uri_handler(httpd, &uri_idx);
-    httpd_register_uri_handler(httpd, &uri_scn);
-    httpd_register_uri_handler(httpd, &uri_cnn);
-
-    // 等待用户通过网页提交配置
-    xEventGroupWaitBits(s_evt, BIT_CONFIG_DONE, pdFALSE, pdTRUE, portMAX_DELAY);
-
-    // 停止 HTTP 和 AP
-    httpd_stop(httpd);
-    esp_wifi_stop();
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    // 用新凭据连接
-    s_ap_mode = false;
-    if (s_status_cb) s_status_cb("Connecting to configured WiFi...", false);
-    if (wifi_try_connect(s_cfg_ssid, s_cfg_password))
-        return ESP_OK;
-
-    // 如果还是失败，递归重试
-    ESP_LOGE(TAG, "Connection failed after config, restarting flow");
-    if (s_status_cb) s_status_cb("WiFi Failed, restart...", false);
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    return wifi_provisioning_start(status_cb);
+    // 所有重试耗尽 — 保持 SoftAP 模式，等待用户重新配置
+    ESP_LOGE(TAG, "All %d provisioning attempts exhausted, staying in SoftAP mode", MAX_PROV_RETRIES);
+    if (s_status_cb) s_status_cb("WiFi Failed. Connect to ESP32-P4-Config to reconfigure.", false);
+    return ESP_FAIL;
 }
 
 // Async: start provisioning in background task

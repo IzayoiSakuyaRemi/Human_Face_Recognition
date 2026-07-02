@@ -64,6 +64,7 @@ void WhoFrameLCDDisp::task()
 #else
         bsp_display_lock(0);
         lv_canvas_set_buffer(m_canvas, fb->buf, fb->width, fb->height, LV_COLOR_FORMAT_NATIVE);
+        lv_obj_invalidate(m_canvas);
         if (m_lcd_disp_cb) {
             m_lcd_disp_cb(fb);
         }

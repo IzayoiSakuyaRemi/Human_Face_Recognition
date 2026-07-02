@@ -3,6 +3,7 @@
 #include "who_recognition_app_term.hpp"
 #include "who_spiflash_fatfs.hpp"
 #include "event_reporter.hpp"
+#include "wifi_provisioning.hpp"
 #include "driver/gpio.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
@@ -16,6 +17,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_wifi.h"
+#include "esp_sntp.h"
 #include "esp_netif.h"
 #include "esp_vfs_fat.h"
 #include "driver/sdspi_host.h"
@@ -444,12 +446,13 @@ extern "C" void app_main(void)
                 fseek(f, 0, SEEK_SET);
                 fread(data, 1, sz, f);
                 fclose(f);
-                lv_image_dsc_t *dsc = (lv_image_dsc_t *)malloc(sizeof(lv_image_dsc_t));
+                lv_image_dsc_t *dsc = (lv_image_dsc_t *)calloc(1, sizeof(lv_image_dsc_t));
                 if (!dsc) { free(data); return nullptr; }
                 dsc->header.cf     = LV_COLOR_FORMAT_RGB565;
                 dsc->header.w      = 1024;
                 dsc->header.h      = 600;
                 dsc->header.stride = 2048;
+                dsc->header.magic  = LV_IMAGE_HEADER_MAGIC;
                 dsc->data           = (const uint8_t *)data;
                 dsc->data_size      = (uint32_t)sz;
                 g_active_wp_dsc  = dsc;
@@ -508,6 +511,26 @@ extern "C" void app_main(void)
         // Clock update timer
         lv_timer_create(on_clock_update_cb, 1000, g_phone);
 
+        // WiFi status bar update + SNTP time sync timer
+        lv_timer_create([](lv_timer_t *t) {
+            auto *phone = (ESP_Brookesia_Phone *)t->user_data;
+            if (wifi_is_connected()) {
+                phone->getHome().getStatusBar()->setWifiIconState(3);
+                // Start SNTP sync once (idempotent after first call)
+                static bool sntp_started = false;
+                if (!sntp_started) {
+                    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+                    esp_sntp_setservername(0, (char *)"pool.ntp.org");
+                    esp_sntp_init();
+                    setenv("TZ", "CST-8", 1);
+                    tzset();
+                    sntp_started = true;
+                }
+            } else {
+                phone->getHome().getStatusBar()->setWifiIconState(0);
+            }
+        }, 5000, g_phone);
+
         // Save desktop screen BEFORE creating camera UI on a dedicated screen
         lv_obj_t *home_scr = lv_screen_active();
         g_phone_home_scr = home_scr;
@@ -515,6 +538,8 @@ extern "C" void app_main(void)
         // Create a dedicated screen for camera and load it temporarily
         // so WhoRecognitionAppLCD creates everything on it (not on desktop)
         g_camera_scr = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(g_camera_scr, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(g_camera_scr, LV_OPA_COVER, LV_PART_MAIN);
         lv_screen_load(g_camera_scr);
 
         // Add Exit button (bottom-right, next to WiFi) to return to desktop
@@ -556,8 +581,12 @@ extern "C" void app_main(void)
 
     if (voice_params.multinet) {
         voice_task_params_t *p = (voice_task_params_t *)malloc(sizeof(voice_task_params_t));
-        *p = voice_params;
-        xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 8192, p, 5, NULL, 0);
+        if (p) {
+            *p = voice_params;
+            xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 8192, p, 5, NULL, 0);
+        } else {
+            ESP_LOGE(TAG, "Failed to allocate voice task params");
+        }
     }
 
     // Switch back to desktop — camera runs on background screen

@@ -106,6 +106,7 @@ void SettingsApp::create_main_page()
 {
     m_main_scr = lv_screen_active();
     lv_obj_set_style_bg_color(m_main_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(m_main_scr, LV_OPA_COVER, LV_PART_MAIN);
 
     lv_obj_t *title = lv_label_create(m_main_scr);
     lv_label_set_text(title, "Settings");
@@ -236,6 +237,7 @@ void SettingsApp::create_face_page()
 {
     m_face_scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(m_face_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(m_face_scr, LV_OPA_COVER, LV_PART_MAIN);
     lv_screen_load(m_face_scr);
 
     lv_obj_t *title = lv_label_create(m_face_scr);
@@ -249,7 +251,7 @@ void SettingsApp::create_face_page()
     lv_obj_set_style_text_font(m_face_count_label, &montserrat_bold_20, LV_PART_MAIN);
     lv_obj_align(m_face_count_label, LV_ALIGN_TOP_LEFT, 20, 60);
 
-    // Clear All button
+    // Clear All button — two-click confirmation to prevent accidental data loss
     lv_obj_t *btn_all = lv_button_create(m_face_scr);
     lv_obj_set_size(btn_all, 140, 36);
     lv_obj_align(btn_all, LV_ALIGN_TOP_RIGHT, -20, 55);
@@ -260,15 +262,65 @@ void SettingsApp::create_face_page()
     lv_obj_t *atxt = lv_label_create(btn_all);
     lv_label_set_text(atxt, "Clear All");
     lv_obj_center(atxt);
+
+    // Two-click confirmation state
+    struct ClearAllState {
+        bool awaiting_confirm = false;
+        lv_timer_t *reset_timer = nullptr;
+        lv_obj_t *btn = nullptr;
+        lv_obj_t *label = nullptr;
+    };
+    auto *clear_state = new ClearAllState();
+    clear_state->btn = btn_all;
+    clear_state->label = atxt;
+
     lv_obj_add_event_cb(btn_all, [](lv_event_t *e) {
         auto *self = (SettingsApp *)lv_event_get_user_data(e);
-        if (g_recognition_app) {
-            auto *r = g_recognition_app->get_recognition()->get_recognition_task();
-            auto *f = r->get_recognizer();
-            if (f) f->clear_all_feats();
+        auto *state = (ClearAllState *)lv_obj_get_user_data(lv_event_get_target_obj(e));
+
+        if (!state->awaiting_confirm) {
+            // First click: ask for confirmation
+            state->awaiting_confirm = true;
+            lv_label_set_text(state->label, "Sure?");
+            lv_obj_set_style_bg_color(state->btn, lv_color_hex(0xcc2222), 0);
+            // Auto-reset after 3 seconds
+            state->reset_timer = lv_timer_create([](lv_timer_t *t) {
+                auto *s = (ClearAllState *)t->user_data;
+                s->awaiting_confirm = false;
+                s->reset_timer = nullptr;
+                // Reset button appearance
+                lv_label_set_text(s->label, "Clear All");
+                lv_obj_set_style_bg_color(s->btn, lv_color_hex(0x662222), 0);
+                lv_timer_del(t);
+            }, 3000, state);
+        } else {
+            // Second click: execute!
+            if (state->reset_timer) {
+                lv_timer_del(state->reset_timer);
+                state->reset_timer = nullptr;
+            }
+            state->awaiting_confirm = false;
+            if (g_recognition_app) {
+                auto *r = g_recognition_app->get_recognition()->get_recognition_task();
+                auto *f = r->get_recognizer();
+                if (f) f->clear_all_feats();
+            }
+            self->refresh_face_list();
+            // Reset button appearance
+            lv_label_set_text(state->label, "Clear All");
+            lv_obj_set_style_bg_color(state->btn, lv_color_hex(0x662222), 0);
         }
-        self->refresh_face_list();
     }, LV_EVENT_CLICKED, this);
+    lv_obj_set_user_data(btn_all, clear_state);
+
+    // Clean up ClearAllState when button is deleted (page exit)
+    lv_obj_add_event_cb(btn_all, [](lv_event_t *e) {
+        auto *state = (ClearAllState *)lv_obj_get_user_data(lv_event_get_target_obj(e));
+        if (state) {
+            if (state->reset_timer) lv_timer_del(state->reset_timer);
+            delete state;
+        }
+    }, LV_EVENT_DELETE, nullptr);
 
     // Scrollable face list
     m_face_list = lv_obj_create(m_face_scr);
@@ -304,6 +356,7 @@ void SettingsApp::create_wifi_page()
 {
     m_wifi_scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(m_wifi_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(m_wifi_scr, LV_OPA_COVER, LV_PART_MAIN);
     lv_screen_load(m_wifi_scr);
 
     lv_obj_t *title = lv_label_create(m_wifi_scr);
@@ -442,6 +495,7 @@ void SettingsApp::create_about_page()
 {
     m_about_scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(m_about_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(m_about_scr, LV_OPA_COVER, LV_PART_MAIN);
     lv_screen_load(m_about_scr);
 
     lv_obj_t *title = lv_label_create(m_about_scr);
@@ -551,18 +605,9 @@ void SettingsApp::apply_wallpaper(const std::string &path)
                                         ((int)LV_PART_MAIN | (int)LV_STATE_DEFAULT));
         }
         // Free old dynamic wallpaper if any
-        if (m_active_wp_data) {
-            free(m_active_wp_data);
-            m_active_wp_data = nullptr;
-        }
-        if (g_active_wp_dsc) {
-            free(g_active_wp_dsc);
-            g_active_wp_dsc = nullptr;
-        }
-        if (g_active_wp_data) {
-            free(g_active_wp_data);
-            g_active_wp_data = nullptr;
-        }
+        if (m_active_wp_data) { free(m_active_wp_data); m_active_wp_data = nullptr; }
+        if (g_active_wp_dsc)  { free(g_active_wp_dsc);  g_active_wp_dsc  = nullptr; }
+        if (g_active_wp_data) { free(g_active_wp_data); g_active_wp_data = nullptr; }
         return;
     }
 
@@ -589,8 +634,8 @@ void SettingsApp::apply_wallpaper(const std::string &path)
         return;
     }
 
-    // Create LVGL image descriptor
-    lv_image_dsc_t *dsc = (lv_image_dsc_t *)malloc(sizeof(lv_image_dsc_t));
+    // Create LVGL image descriptor (calloc = zero-init, magic byte critical)
+    lv_image_dsc_t *dsc = (lv_image_dsc_t *)calloc(1, sizeof(lv_image_dsc_t));
     if (!dsc) {
         free(pixels);
         return;
@@ -599,6 +644,7 @@ void SettingsApp::apply_wallpaper(const std::string &path)
     dsc->header.w     = WP_WIDTH;
     dsc->header.h     = WP_HEIGHT;
     dsc->header.stride = WP_WIDTH * 2;
+    dsc->header.magic  = LV_IMAGE_HEADER_MAGIC;
     dsc->data         = (const uint8_t *)pixels;
     dsc->data_size    = WP_SIZE;
 
@@ -641,6 +687,7 @@ void SettingsApp::create_wallpaper_page()
 {
     m_wallpaper_scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(m_wallpaper_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(m_wallpaper_scr, LV_OPA_COVER, LV_PART_MAIN);
     lv_screen_load(m_wallpaper_scr);
 
     lv_obj_t *title = lv_label_create(m_wallpaper_scr);
@@ -758,6 +805,12 @@ void SettingsApp::create_wallpaper_page()
         std::string *path_copy = new std::string(wp);
         lv_obj_set_user_data(row, this);
         lv_obj_set_user_data(btn, path_copy);
+
+        // Free path_copy when button is deleted (e.g., page exit)
+        lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+            auto *ptr = (std::string *)lv_obj_get_user_data(lv_event_get_target_obj(e));
+            delete ptr;
+        }, LV_EVENT_DELETE, nullptr);
 
         lv_obj_add_event_cb(btn, [](lv_event_t *e) {
             lv_obj_t *btn = lv_event_get_target_obj(e);

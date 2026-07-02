@@ -1,0 +1,10 @@
+menu "Human Face Recognition App"
+
+    config EVENT_SERVER_URL
+        string "Event report server URL"
+        default "http://172.23.12.96:8765/api/event"
+        help
+            HTTP server URL for telemetry events (POST JSON).
+            Format: http://<host>:<port>/<path>
+
+endmenu

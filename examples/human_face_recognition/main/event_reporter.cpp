@@ -7,7 +7,7 @@
 #include <esp_log.h>
 
 static const char *TAG = "reporter";
-static const char *SERVER_URL = "http://10.110.56.96:8765/api/event";
+static const char *SERVER_URL = CONFIG_EVENT_SERVER_URL;
 static QueueHandle_t s_report_queue = nullptr;
 
 struct ReportTask {
