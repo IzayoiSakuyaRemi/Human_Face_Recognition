@@ -21,19 +21,25 @@ WhoFrameLCDDisp::WhoFrameLCDDisp(const std::string &name, frame_cap::WhoFrameCap
 {
     frame_cap_node->add_new_frame_signal_subscriber(this);
 #if !BSP_CONFIG_NO_GRAPHIC_LIB
-    bsp_display_lock(0);
-    m_canvas = lv_canvas_create(parent ? parent : lv_scr_act());
-    lv_obj_set_size(m_canvas, frame_cap_node->get_fb_width(), frame_cap_node->get_fb_height());
-    bsp_display_unlock();
+    if (parent) {
+        bsp_display_lock(0);
+        m_canvas = lv_canvas_create(parent);
+        lv_obj_set_size(m_canvas, frame_cap_node->get_fb_width(), frame_cap_node->get_fb_height());
+        bsp_display_unlock();
+    } else {
+        m_canvas = nullptr;  // deferred — create_canvas() must be called later
+    }
 #endif
 }
 
 WhoFrameLCDDisp::~WhoFrameLCDDisp()
 {
 #if !BSP_CONFIG_NO_GRAPHIC_LIB
-    bsp_display_lock(0);
-    lv_obj_del(m_canvas);
-    bsp_display_unlock();
+    if (m_canvas) {
+        bsp_display_lock(0);
+        lv_obj_del(m_canvas);
+        bsp_display_unlock();
+    }
 #endif
     delete m_lcd;
 }
@@ -47,6 +53,15 @@ void WhoFrameLCDDisp::set_lcd_disp_cb(const std::function<void(who::cam::cam_fb_
 lv_obj_t *WhoFrameLCDDisp::get_canvas()
 {
     return m_canvas;
+}
+
+void WhoFrameLCDDisp::create_canvas(lv_obj_t *parent)
+{
+    if (m_canvas) return;  // already created
+    bsp_display_lock(0);
+    m_canvas = lv_canvas_create(parent);
+    lv_obj_set_size(m_canvas, m_frame_cap_node->get_fb_width(), m_frame_cap_node->get_fb_height());
+    bsp_display_unlock();
 }
 #endif
 
@@ -74,13 +89,15 @@ void WhoFrameLCDDisp::task()
         }
         m_lcd->draw_bitmap(fb->buf, (int)fb->width, (int)fb->height, 0, 0);
 #else
-        bsp_display_lock(0);
-        lv_canvas_set_buffer(m_canvas, fb->buf, fb->width, fb->height, LV_COLOR_FORMAT_NATIVE);
-        lv_obj_invalidate(m_canvas);
-        if (m_lcd_disp_cb) {
-            m_lcd_disp_cb(fb);
+        if (m_canvas) {
+            bsp_display_lock(0);
+            lv_canvas_set_buffer(m_canvas, fb->buf, fb->width, fb->height, LV_COLOR_FORMAT_NATIVE);
+            lv_obj_invalidate(m_canvas);
+            if (m_lcd_disp_cb) {
+                m_lcd_disp_cb(fb);
+            }
+            bsp_display_unlock();
         }
-        bsp_display_unlock();
 #endif
     }
     xEventGroupSetBits(m_event_group, TASK_STOPPED);

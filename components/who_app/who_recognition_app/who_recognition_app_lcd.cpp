@@ -21,8 +21,11 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     m_status_label(nullptr),
     m_exec_label(nullptr)
 {
-    // Pipeline setup only — no UI objects created here.
-    // UI is deferred to create_ui() so the owning PhoneApp can provide its screen.
+    // Pipeline setup — models, tasks, callbacks.
+    // LCD display task is registered here (nullptr parent = canvas deferred to create_ui())
+    m_lcd_disp = new lcd_disp::WhoFrameLCDDisp("LCDDisp", frame_cap->get_last_node(), 1, nullptr);
+    WhoApp::add_task(m_lcd_disp);
+    m_lcd_disp->set_lcd_disp_cb(std::bind(&WhoRecognitionAppLCD::lcd_disp_cb, this, std::placeholders::_1));
 
     char db_path[64];
 #if CONFIG_DB_FATFS_FLASH
@@ -52,12 +55,12 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
 
 void WhoRecognitionAppLCD::create_ui(lv_obj_t *parent)
 {
-    if (m_lcd_disp) return;  // already created
+    if (m_label) return;  // already created
 
-    // 1. LCD display (canvas) on parent
-    m_lcd_disp = new lcd_disp::WhoFrameLCDDisp("LCDDisp", m_frame_cap->get_last_node(), 1, parent);
-    WhoApp::add_task(m_lcd_disp);
-    m_lcd_disp->set_lcd_disp_cb(std::bind(&WhoRecognitionAppLCD::lcd_disp_cb, this, std::placeholders::_1));
+    // 1. Create canvas on the app's screen (lcd_disp task was registered in constructor)
+    if (m_lcd_disp) {
+        m_lcd_disp->create_canvas(parent);
+    }
 
     // 2. Labels — children of parent screen
     bsp_display_lock(0);

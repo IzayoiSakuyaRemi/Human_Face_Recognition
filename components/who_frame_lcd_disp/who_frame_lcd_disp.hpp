@@ -15,6 +15,9 @@ public:
     void set_lcd_disp_cb(const std::function<void(who::cam::cam_fb_t *)> &lcd_disp_cb);
 #if !BSP_CONFIG_NO_GRAPHIC_LIB
     lv_obj_t *get_canvas();
+    /// Create or recreate the canvas on a specific parent screen.
+    /// Used when task is registered early but canvas screen isn't available until later.
+    void create_canvas(lv_obj_t *parent);
 #endif
 
 private:
