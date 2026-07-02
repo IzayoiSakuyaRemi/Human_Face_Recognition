@@ -410,7 +410,7 @@ extern "C" void app_main(void)
             .flags = {
                 .buff_dma = true,
                 .buff_spiram = true,  // full-screen buffers need PSRAM
-                .sw_rotate = true,
+                .sw_rotate = false,  // rotation=0, buffer unused — save 1.2MB PSRAM
             }
         };
         lv_display_t *disp = bsp_display_start_with_config(&cfg);
