@@ -490,13 +490,13 @@ void SettingsApp::create_about_page()
 }
 
 // ============================================================
-// Wallpaper: scan /spiflash/ for .bin files
+// Wallpaper: scan SD card for .rgb565 files
 // ============================================================
 #define WP_WIDTH  1024
 #define WP_HEIGHT 600
 #define WP_SIZE   (WP_WIDTH * WP_HEIGHT * 2)  // RGB565 = 1,228,800 bytes
 
-static const char *WP_DIR       = "/spiflash";
+static const char *WP_DIR       = "/sdcard";
 static const char *WP_NVS_NS    = "wallpaper";
 static const char *WP_NVS_KEY   = "path";
 
@@ -658,31 +658,28 @@ void SettingsApp::create_wallpaper_page()
     lv_obj_set_style_text_font(m_wallpaper_status, &montserrat_bold_20, LV_PART_MAIN);
     lv_obj_align(m_wallpaper_status, LV_ALIGN_TOP_LEFT, 20, 60);
 
-    // Free space label
+    // Disk usage label (sum sizes of all files in WP_DIR)
     {
         lv_obj_t *lbl = lv_label_create(m_wallpaper_scr);
-        unsigned long free_kb = 0, total_kb = 3 * 1024;  // storage partition = 3MB
+        unsigned long used_kb = 0;
         DIR *d = opendir(WP_DIR);
         if (d) {
             struct dirent *ent;
-            unsigned long used = 0;
             while ((ent = readdir(d)) != NULL) {
                 char p[300];
                 snprintf(p, sizeof(p), "%s/%s", WP_DIR, ent->d_name);
                 struct stat st;
-                if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) used += st.st_size;
+                if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) used_kb += st.st_size / 1024;
             }
             closedir(d);
-            free_kb = total_kb - (unsigned long)(used / 1024);
-            if (free_kb > total_kb) free_kb = 0;
         }
         char space_buf[64];
-        snprintf(space_buf, sizeof(space_buf), "Free: %lu KB / %lu KB", free_kb, total_kb);
+        snprintf(space_buf, sizeof(space_buf), "Used: %lu KB", used_kb);
         lv_label_set_text(lbl, space_buf);
         lv_obj_set_style_text_color(lbl, lv_color_hex(0x668866), LV_PART_MAIN);
         lv_obj_set_style_text_font(lbl, &montserrat_bold_20, LV_PART_MAIN);
         lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 20, 85);
-        ESP_LOGI(TAG, "Storage %s: %lu KB free / %lu KB total", WP_DIR, free_kb, total_kb);
+        ESP_LOGI(TAG, "Storage %s: %lu KB used", WP_DIR, used_kb);
     }
 
     // Read current wallpaper from NVS
@@ -719,9 +716,9 @@ void SettingsApp::create_wallpaper_page()
 
     if (m_wallpaper_files.empty()) {
         lv_obj_t *lbl = lv_label_create(m_wallpaper_list);
-        lv_label_set_text(lbl, "No .rgb565 wallpapers found in /spiflash/\n\n"
+        lv_label_set_text(lbl, "No .rgb565 wallpapers found in /sdcard/\n\n"
                                "Copy 1024x600 RGB565 .rgb565 files\n"
-                               "to the flash storage partition.");
+                               "to the SD card root.");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0x888888), LV_PART_MAIN);
         lv_obj_set_style_text_font(lbl, &montserrat_bold_20, LV_PART_MAIN);
     }

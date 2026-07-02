@@ -17,6 +17,10 @@
 #include "esp_heap_caps.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "esp_vfs_fat.h"
+#include "driver/sdspi_host.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#include "sdmmc_cmd.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_brookesia.hpp"
@@ -335,6 +339,52 @@ extern "C" void app_main(void)
         vTaskPrioritySet(NULL, 5);
     }
 
+    // ---- Mount SD card via SPI (with internal LDO power for UHS-I pins) ----
+    {
+        ESP_LOGI(TAG, "Mounting SD card (SDSPI, pins 39/42/43/44)...");
+
+        esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+            .format_if_mount_failed = false,
+            .max_files = 5,
+            .allocation_unit_size = 64 * 1024,
+        };
+        sdmmc_card_t *card = NULL;
+
+        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+
+        // Internal LDO power for UHS-I pins (39-44)
+        sd_pwr_ctrl_ldo_config_t ldo_cfg = { .ldo_chan_id = 4 };
+        sd_pwr_ctrl_handle_t pwr_ctrl = NULL;
+        if (sd_pwr_ctrl_new_on_chip_ldo(&ldo_cfg, &pwr_ctrl) == ESP_OK) {
+            host.pwr_ctrl_handle = pwr_ctrl;
+        }
+
+        spi_bus_config_t bus_cfg = {
+            .mosi_io_num = 44,  // CMD
+            .miso_io_num = 39,  // D0
+            .sclk_io_num = 43,  // CLK
+            .quadwp_io_num = -1,
+            .quadhd_io_num = -1,
+            .max_transfer_sz = 4000,
+        };
+        esp_err_t ret = spi_bus_initialize((spi_host_device_t)host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "SDSPI bus init failed: %s", esp_err_to_name(ret));
+        } else {
+            sdspi_device_config_t slot_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
+            slot_cfg.gpio_cs = GPIO_NUM_42;  // D3
+            slot_cfg.host_id = (spi_host_device_t)host.slot;
+
+            ret = esp_vfs_fat_sdspi_mount("/sdcard", &host, &slot_cfg, &mount_cfg, &card);
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "SD card mount failed: 0x%x (%s)", ret, esp_err_to_name(ret));
+            } else {
+                ESP_LOGI(TAG, "SD card mounted at /sdcard");
+                sdmmc_card_print_info(stdout, card);
+            }
+        }
+    }
+
     // ---- Initialize LVGL + Brookesia Phone UI ----
     // Set skip flag BEFORE creating recognition app (prevents WhoLCD from re-initializing LVGL)
     who::lcd::WhoLCD::s_skip_hw_init = true;
@@ -423,12 +473,12 @@ extern "C" void app_main(void)
                 nvs_close(nvs);
             }
 
-            // Step 2: if still default, try flash wallpaper.rgb565
+            // Step 2: if still default, try SD card wallpaper.rgb565
             if (wp_resource == &wallpaper_dsc) {
-                lv_image_dsc_t *dsc = try_load("/spiflash/wallpaper.rgb565");
+                lv_image_dsc_t *dsc = try_load("/sdcard/wallpaper.rgb565");
                 if (dsc) {
                     wp_resource = dsc;
-                    ESP_LOGI(TAG, "Wallpaper from flash: /spiflash/wallpaper.rgb565");
+                    ESP_LOGI(TAG, "Wallpaper from SD card: /sdcard/wallpaper.rgb565");
                 }
             }
 
