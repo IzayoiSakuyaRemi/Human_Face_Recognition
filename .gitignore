@@ -1,6 +1,7 @@
 build/
 
-sdkconfig
+# sdkconfig tracked explicitly — project-specific config
+# sdkconfig
 sdkconfig.old
 
 .vscode/
