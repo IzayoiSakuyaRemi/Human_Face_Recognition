@@ -630,7 +630,7 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t *config, bsp_l
 
     ESP_GOTO_ON_ERROR(esp_lcd_panel_reset(disp_panel), err, TAG, "LCD panel reset failed");
     ESP_GOTO_ON_ERROR(esp_lcd_panel_init(disp_panel), err, TAG, "LCD panel init failed");
-    esp_lcd_panel_mirror(disp_panel, false, false);
+    esp_lcd_panel_mirror(disp_panel, false, true);   // mirror_y=true: HW vertical flip replaces SW flip
     ESP_LOGI(TAG, "!!! MIRROR CALLED !!!");
 #elif CONFIG_BSP_LCD_TYPE_1280_800
     // create ILI9881C control panel
