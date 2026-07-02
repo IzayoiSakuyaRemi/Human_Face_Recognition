@@ -13,10 +13,16 @@ namespace who {
 namespace app {
 WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     WhoRecognitionAppBase(frame_cap),
-    m_lcd_disp(new lcd_disp::WhoFrameLCDDisp("LCDDisp", frame_cap->get_last_node(), 1))
+    m_lcd_disp(nullptr),
+    m_recognition_button(nullptr),
+    m_text_result_lcd_disp(nullptr),
+    m_detect_result_lcd_disp(nullptr),
+    m_label(nullptr),
+    m_status_label(nullptr),
+    m_exec_label(nullptr)
 {
-    WhoApp::add_task(m_lcd_disp);
-    m_lcd_disp->set_lcd_disp_cb(std::bind(&WhoRecognitionAppLCD::lcd_disp_cb, this, std::placeholders::_1));
+    // Pipeline setup only — no UI objects created here.
+    // UI is deferred to create_ui() so the owning PhoneApp can provide its screen.
 
     char db_path[64];
 #if CONFIG_DB_FATFS_FLASH
@@ -31,39 +37,8 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     m_recognition->set_detect_model(
         new HumanFaceDetect(static_cast<HumanFaceDetect::model_type_t>(CONFIG_DEFAULT_HUMAN_FACE_DETECT_MODEL), false));
 
-    bsp_display_lock(0);
-    m_label = create_lvgl_label("", &montserrat_bold_26);
-    lv_obj_align(m_label, LV_ALIGN_LEFT_MID, 10, 0);
-
-    // 语音指令状态 — 左下角
-    m_status_label = create_lvgl_label("Cmd: Open Door", &montserrat_bold_20, {255, 255, 255});
-    lv_obj_align(m_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
-
-    // 执行许可标签 — 状态标签上方
-    m_exec_label = create_lvgl_label("", &montserrat_bold_20, {0, 255, 0});
-    lv_obj_align(m_exec_label, LV_ALIGN_BOTTOM_LEFT, 10, -35);
-    bsp_display_unlock();
-
-#if CONFIG_IDF_TARGET_ESP32S3
-    int disp_n_frames = 60;
-#elif CONFIG_IDF_TARGET_ESP32P4
-    int disp_n_frames = 30;
-#endif
-
     auto recognition_task = m_recognition->get_recognition_task();
     auto detect_task = m_recognition->get_detect_task();
-#if defined(BSP_BOARD_ESP32_S3_EYE) || defined(BSP_BOARD_ESP32_S3_KORVO_2)
-    m_recognition_button =
-        button::get_recognition_button(button::recognition_button_type_t::PHYSICAL, recognition_task);
-#elif defined(BSP_BOARD_ESP32_P4_FUNCTION_EV_BOARD)
-    m_recognition_button = button::get_recognition_button(button::recognition_button_type_t::LVGL, recognition_task);
-#else
-    m_recognition_button =
-        button::get_recognition_button(button::recognition_button_type_t::PHYSICAL, recognition_task);
-#endif
-    m_text_result_lcd_disp = new lcd_disp::WhoTextResultLCDDisp(recognition_task, m_label, disp_n_frames);
-    m_detect_result_lcd_disp =
-        new lcd_disp::WhoDetectResultLCDDisp(detect_task, m_lcd_disp->get_canvas(), {{255, 0, 0}});
     recognition_task->set_recognition_result_cb(
         std::bind(&WhoRecognitionAppLCD::recognition_result_cb, this, std::placeholders::_1));
     g_recog_event_group = recognition_task->get_event_group();
@@ -75,15 +50,60 @@ WhoRecognitionAppLCD::WhoRecognitionAppLCD(frame_cap::WhoFrameCap *frame_cap) :
     detect_task->set_cleanup_func(std::bind(&WhoRecognitionAppLCD::detect_cleanup, this));
 }
 
+void WhoRecognitionAppLCD::create_ui(lv_obj_t *parent)
+{
+    if (m_lcd_disp) return;  // already created
+
+    // 1. LCD display (canvas) on parent
+    m_lcd_disp = new lcd_disp::WhoFrameLCDDisp("LCDDisp", m_frame_cap->get_last_node(), 1, parent);
+    WhoApp::add_task(m_lcd_disp);
+    m_lcd_disp->set_lcd_disp_cb(std::bind(&WhoRecognitionAppLCD::lcd_disp_cb, this, std::placeholders::_1));
+
+    // 2. Labels — children of parent screen
+    bsp_display_lock(0);
+    m_label = create_lvgl_label("", &montserrat_bold_26, {255, 0, 0}, parent);
+    lv_obj_align(m_label, LV_ALIGN_LEFT_MID, 10, 0);
+
+    m_status_label = create_lvgl_label("Cmd: Open Door", &montserrat_bold_20, {255, 255, 255}, parent);
+    lv_obj_align(m_status_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+
+    m_exec_label = create_lvgl_label("", &montserrat_bold_20, {0, 255, 0}, parent);
+    lv_obj_align(m_exec_label, LV_ALIGN_BOTTOM_LEFT, 10, -35);
+    bsp_display_unlock();
+
+    // 3. Recognition button (LVGL buttons) on parent
+    auto recognition_task = m_recognition->get_recognition_task();
+    auto detect_task = m_recognition->get_detect_task();
+#if defined(BSP_BOARD_ESP32_S3_EYE) || defined(BSP_BOARD_ESP32_S3_KORVO_2)
+    m_recognition_button =
+        button::get_recognition_button(button::recognition_button_type_t::PHYSICAL, recognition_task);
+#elif defined(BSP_BOARD_ESP32_P4_FUNCTION_EV_BOARD)
+    m_recognition_button = button::get_recognition_button(button::recognition_button_type_t::LVGL, recognition_task, parent);
+#else
+    m_recognition_button =
+        button::get_recognition_button(button::recognition_button_type_t::PHYSICAL, recognition_task);
+#endif
+
+    // 4. Result display handlers
+#if CONFIG_IDF_TARGET_ESP32S3
+    int disp_n_frames = 60;
+#elif CONFIG_IDF_TARGET_ESP32P4
+    int disp_n_frames = 30;
+#endif
+    m_text_result_lcd_disp = new lcd_disp::WhoTextResultLCDDisp(recognition_task, m_label, disp_n_frames);
+    m_detect_result_lcd_disp =
+        new lcd_disp::WhoDetectResultLCDDisp(detect_task, m_lcd_disp->get_canvas(), {{255, 0, 0}});
+}
+
 WhoRecognitionAppLCD::~WhoRecognitionAppLCD()
 {
     delete m_recognition_button;
     delete m_text_result_lcd_disp;
     delete m_detect_result_lcd_disp;
     bsp_display_lock(0);
-    lv_obj_del(m_exec_label);
-    lv_obj_del(m_status_label);
-    lv_obj_del(m_label);
+    if (m_exec_label) lv_obj_del(m_exec_label);
+    if (m_status_label) lv_obj_del(m_status_label);
+    if (m_label) lv_obj_del(m_label);
     bsp_display_unlock();
 }
 
@@ -129,17 +149,19 @@ void app::WhoRecognitionAppLCD::detect_cleanup()
 void WhoRecognitionAppLCD::set_status_text(const char *text)
 {
     bsp_display_lock(0);
-    lv_label_set_text(m_status_label, text);
+    if (m_status_label) lv_label_set_text(m_status_label, text);
     bsp_display_unlock();
 }
 
 void WhoRecognitionAppLCD::set_exec_text(const char *text)
 {
     bsp_display_lock(0);
-    lv_label_set_text(m_exec_label, text);
-    // Red for Alarm, green for Allow
-    lv_color_t c = (strstr(text, "Alarm")) ? lv_color_make(255, 0, 0) : lv_color_make(0, 255, 0);
-    lv_obj_set_style_text_color(m_exec_label, c, LV_PART_MAIN);
+    if (m_exec_label) {
+        lv_label_set_text(m_exec_label, text);
+        // Red for Alarm, green for Allow
+        lv_color_t c = (strstr(text, "Alarm")) ? lv_color_make(255, 0, 0) : lv_color_make(0, 255, 0);
+        lv_obj_set_style_text_color(m_exec_label, c, LV_PART_MAIN);
+    }
     bsp_display_unlock();
 }
 

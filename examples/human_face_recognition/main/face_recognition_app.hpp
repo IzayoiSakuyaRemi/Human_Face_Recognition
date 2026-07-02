@@ -1,9 +1,6 @@
 #pragma once
 #include "esp_brookesia.hpp"
 
-// Global camera screen handle, set by app_main, used by FaceRecognitionApp
-extern lv_obj_t *g_camera_scr;
-
 class FaceRecognitionApp : public ESP_Brookesia_PhoneApp {
 public:
     FaceRecognitionApp();
@@ -15,5 +12,7 @@ public:
     bool close() override;
 
 private:
-    static bool s_app_installed;
+    void create_exit_button(lv_obj_t *parent);
+    lv_obj_t *m_exit_btn = nullptr;
+    bool m_ui_created = false;
 };

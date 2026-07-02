@@ -12,6 +12,11 @@ public:
     ~WhoRecognitionAppLCD();
     bool run() override;
 
+    /// Create all UI objects (canvas, labels, buttons) on the given parent screen.
+    /// Call this once from the owning PhoneApp's run() method.
+    /// If not called (backward compat), construction creates UI on lv_scr_act().
+    void create_ui(lv_obj_t *parent);
+
 protected:
     virtual void recognition_result_cb(const std::string &result);
     virtual void detect_result_cb(const detect::WhoDetect::result_t &result);

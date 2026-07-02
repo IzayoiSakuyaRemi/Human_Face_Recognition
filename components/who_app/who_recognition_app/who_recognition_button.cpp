@@ -65,12 +65,17 @@ void WhoRecognitionButtonPhysical::btn_event_handler(void *button_handle, void *
 #endif
 
 WhoRecognitionButtonLVGL::WhoRecognitionButtonLVGL(recognition::WhoRecognitionCore *recognition) :
+    WhoRecognitionButtonLVGL(recognition, lv_scr_act())
+{
+}
+
+WhoRecognitionButtonLVGL::WhoRecognitionButtonLVGL(recognition::WhoRecognitionCore *recognition, lv_obj_t *parent) :
     WhoRecognitionButton(recognition)
 {
     bsp_display_lock(0);
-    m_btn_recognize = create_lvgl_btn("recognize", &montserrat_bold_26);
-    m_btn_enroll = create_lvgl_btn("enroll", &montserrat_bold_26);
-    m_btn_delete = create_lvgl_btn("delete", &montserrat_bold_26);
+    m_btn_recognize = create_lvgl_btn("recognize", &montserrat_bold_26, parent);
+    m_btn_enroll = create_lvgl_btn("enroll", &montserrat_bold_26, parent);
+    m_btn_delete = create_lvgl_btn("delete", &montserrat_bold_26, parent);
     lv_obj_add_event_cb(m_btn_recognize, btn_event_handler, LV_EVENT_CLICKED, (void *)m_btn_user_data);
     lv_obj_add_event_cb(m_btn_enroll, btn_event_handler, LV_EVENT_CLICKED, (void *)(m_btn_user_data + 1));
     lv_obj_add_event_cb(m_btn_delete, btn_event_handler, LV_EVENT_CLICKED, (void *)(m_btn_user_data + 2));
@@ -135,6 +140,16 @@ WhoRecognitionButton *get_recognition_button(recognition_button_type_t btn_type,
         ESP_LOGE("RecognitionButton", "Wrong recognition button type.");
         return nullptr;
     }
+}
+
+WhoRecognitionButton *get_recognition_button(recognition_button_type_t btn_type,
+                                             recognition::WhoRecognitionCore *recognition,
+                                             lv_obj_t *parent)
+{
+    if (btn_type == recognition_button_type_t::LVGL) {
+        return new WhoRecognitionButtonLVGL(recognition, parent);
+    }
+    return get_recognition_button(btn_type, recognition);
 }
 } // namespace button
 } // namespace who

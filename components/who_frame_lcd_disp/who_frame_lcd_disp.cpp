@@ -16,6 +16,18 @@ WhoFrameLCDDisp::WhoFrameLCDDisp(const std::string &name, frame_cap::WhoFrameCap
 #endif
 }
 
+WhoFrameLCDDisp::WhoFrameLCDDisp(const std::string &name, frame_cap::WhoFrameCapNode *frame_cap_node, int peek_index, lv_obj_t *parent) :
+    task::WhoTask(name), m_lcd(new lcd::WhoLCD()), m_frame_cap_node(frame_cap_node), m_peek_index(peek_index)
+{
+    frame_cap_node->add_new_frame_signal_subscriber(this);
+#if !BSP_CONFIG_NO_GRAPHIC_LIB
+    bsp_display_lock(0);
+    m_canvas = lv_canvas_create(parent ? parent : lv_scr_act());
+    lv_obj_set_size(m_canvas, frame_cap_node->get_fb_width(), frame_cap_node->get_fb_height());
+    bsp_display_unlock();
+#endif
+}
+
 WhoFrameLCDDisp::~WhoFrameLCDDisp()
 {
 #if !BSP_CONFIG_NO_GRAPHIC_LIB

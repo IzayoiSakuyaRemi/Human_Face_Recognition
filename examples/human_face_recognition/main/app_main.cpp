@@ -41,9 +41,6 @@ bool g_voice_paused = false;
 
 // Brookesia globals
 static ESP_Brookesia_Phone *g_phone = nullptr;
-static lv_obj_t *g_phone_home_scr = nullptr;
-lv_obj_t *g_camera_scr = nullptr;
-
 // Dynamic wallpaper tracking (for cleanup on switch)
 // Non-static so SettingsApp can free boot-time allocation
 lv_image_dsc_t *g_active_wp_dsc = nullptr;
@@ -531,39 +528,10 @@ extern "C" void app_main(void)
             }
         }, 5000, g_phone);
 
-        // Save desktop screen BEFORE creating camera UI on a dedicated screen
-        lv_obj_t *home_scr = lv_screen_active();
-        g_phone_home_scr = home_scr;
-
-        // Create a dedicated screen for camera and load it temporarily
-        // so WhoRecognitionAppLCD creates everything on it (not on desktop)
-        g_camera_scr = lv_obj_create(NULL);
-        lv_obj_set_style_bg_color(g_camera_scr, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(g_camera_scr, LV_OPA_COVER, LV_PART_MAIN);
-        lv_screen_load(g_camera_scr);
-
-        // Add Exit button (bottom-right, next to WiFi) to return to desktop
-        {
-            lv_obj_t *btn_exit = lv_button_create(g_camera_scr);
-            lv_obj_t *label = lv_label_create(btn_exit);
-            lv_label_set_text(label, "Exit");
-            lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, LV_PART_MAIN);
-            lv_obj_center(label);
-            lv_obj_align(btn_exit, LV_ALIGN_TOP_RIGHT, -10, 300);
-            lv_obj_set_style_bg_color(btn_exit, lv_color_hex(0x662222), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(btn_exit, LV_OPA_80, LV_PART_MAIN);
-            lv_obj_set_style_border_width(btn_exit, 2, LV_PART_MAIN);
-            lv_obj_set_style_border_color(btn_exit, lv_color_hex(0xcc4444), LV_PART_MAIN);
-            lv_obj_set_style_radius(btn_exit, 6, LV_PART_MAIN);
-            lv_obj_add_event_cb(btn_exit, [](lv_event_t *e) {
-                if (g_phone_home_scr) lv_screen_load(g_phone_home_scr);
-            }, LV_EVENT_CLICKED, nullptr);
-        }
-
         bsp_display_unlock();
     }
 
-    // ---- Create Recognition App (on camera_scr, not desktop) ----
+    // ---- Create Recognition App (pipeline only, UI created in FaceRecognitionApp::run()) ----
     auto recognition_app = new WhoRecognitionAppLCD(frame_cap);
     g_recognition_app = recognition_app;
 
@@ -588,10 +556,6 @@ extern "C" void app_main(void)
             ESP_LOGE(TAG, "Failed to allocate voice task params");
         }
     }
-
-    // Switch back to desktop — camera runs on background screen
-    // Camera preview will show when user clicks Camera icon (Phase 2.2)
-    if (g_phone_home_scr) lv_screen_load(g_phone_home_scr);
 
     recognition_app->run();
 }

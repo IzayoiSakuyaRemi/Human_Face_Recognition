@@ -32,6 +32,7 @@ private:
 class WhoRecognitionButtonLVGL : public WhoRecognitionButton {
 public:
     WhoRecognitionButtonLVGL(recognition::WhoRecognitionCore *recognition);
+    WhoRecognitionButtonLVGL(recognition::WhoRecognitionCore *recognition, lv_obj_t *parent);
     ~WhoRecognitionButtonLVGL();
 
 private:
@@ -48,5 +49,8 @@ enum class recognition_button_type_t {
 
 WhoRecognitionButton *get_recognition_button(recognition_button_type_t btn_type,
                                              recognition::WhoRecognitionCore *recognition);
+WhoRecognitionButton *get_recognition_button(recognition_button_type_t btn_type,
+                                             recognition::WhoRecognitionCore *recognition,
+                                             lv_obj_t *parent);
 } // namespace button
 } // namespace who
