@@ -29,7 +29,7 @@
 #include "who_lvgl_lcd.hpp"
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
-#include "wallpaper.h"
+// wallpaper now loaded from SD card or NVS only (no compiled-in default)
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -429,7 +429,7 @@ extern "C" void app_main(void)
 
         // Try loading wallpaper: NVS path → /sdcard/wallpaper.rgb565 → default
         {
-            const void *wp_resource = &wallpaper_dsc;  // fallback
+            const void *wp_resource = nullptr;  // fallback: brookesia default
 
             // Helper: load a .rgb565 file into lv_image_dsc_t
             auto try_load = [](const char *path) -> lv_image_dsc_t * {
@@ -473,8 +473,8 @@ extern "C" void app_main(void)
                 nvs_close(nvs);
             }
 
-            // Step 2: if still default, try SD card wallpaper.rgb565
-            if (wp_resource == &wallpaper_dsc) {
+            // Step 2: if no wallpaper yet, try SD card wallpaper.rgb565
+            if (!wp_resource) {
                 lv_image_dsc_t *dsc = try_load("/sdcard/wallpaper.rgb565");
                 if (dsc) {
                     wp_resource = dsc;
@@ -482,8 +482,10 @@ extern "C" void app_main(void)
                 }
             }
 
-            stylesheet->core.home.background.wallpaper_image_resource =
-                ESP_BROOKESIA_STYLE_IMAGE(wp_resource);
+            if (wp_resource) {
+                stylesheet->core.home.background.wallpaper_image_resource =
+                    ESP_BROOKESIA_STYLE_IMAGE(wp_resource);
+            }  // else: brookesia uses its built-in default wallpaper
         }
 
         g_phone->addStylesheet(stylesheet);

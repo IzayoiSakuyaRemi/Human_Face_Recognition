@@ -1,6 +1,6 @@
 #include "settings_app.hpp"
 #include "wifi_provisioning.hpp"
-#include "wallpaper.h"
+// wallpaper loaded from SD card — no compiled-in default
 #include "who_recognition_app_lcd.hpp"
 #include "who_recognition.hpp"
 #include "human_face_recognition.hpp"
@@ -628,10 +628,10 @@ void SettingsApp::scan_wallpapers()
 void SettingsApp::apply_wallpaper(const std::string &path)
 {
     if (path == "default") {
-        // Revert to compiled-in default
+        // Revert to brookesia built-in default wallpaper
         if (getCore()) {
             lv_obj_t *main_obj = getCore()->getCoreDisplay().getMainScreenObject();
-            lv_obj_set_style_bg_img_src(main_obj, &wallpaper_dsc,
+            lv_obj_set_style_bg_img_src(main_obj, nullptr,
                                         ((int)LV_PART_MAIN | (int)LV_STATE_DEFAULT));
         }
         // Free old dynamic wallpaper if any
