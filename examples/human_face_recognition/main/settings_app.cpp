@@ -100,36 +100,62 @@ static lv_obj_t *menu_row_create(lv_obj_t *parent, const char *text, int y)
 }
 
 // ============================================================
+// Page management helpers
+// ============================================================
+lv_obj_t *SettingsApp::create_page_container()
+{
+    lv_obj_t *c = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(c, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(c, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(c, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(c, 0, LV_PART_MAIN);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+    return c;
+}
+
+void SettingsApp::show_page(lv_obj_t *page, bool push_to_stack)
+{
+    if (m_current_page && push_to_stack) {
+        m_page_stack.push_back(m_current_page);
+    }
+    if (m_current_page) {
+        lv_obj_add_flag(m_current_page, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_clear_flag(page, LV_OBJ_FLAG_HIDDEN);
+    m_current_page = page;
+}
+
+// ============================================================
 // Main Page
 // ============================================================
 void SettingsApp::create_main_page()
 {
-    m_main_scr = lv_screen_active();
-    lv_obj_set_style_bg_color(m_main_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(m_main_scr, LV_OPA_COVER, LV_PART_MAIN);
+    m_main_page = create_page_container();
+    show_page(m_main_page, false);  // first page, no stack push
 
-    lv_obj_t *title = lv_label_create(m_main_scr);
+    lv_obj_t *title = lv_label_create(m_main_page);
     lv_label_set_text(title, "Settings");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(title, &montserrat_bold_26, LV_PART_MAIN);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
-    auto *btn1 = menu_row_create(m_main_scr, "Face Database", 80);
+    auto *btn1 = menu_row_create(m_main_page, "Face Database", 80);
     lv_obj_add_event_cb(btn1, [](lv_event_t *e) {
         ((SettingsApp *)lv_event_get_user_data(e))->create_face_page();
     }, LV_EVENT_CLICKED, this);
 
-    auto *btn2 = menu_row_create(m_main_scr, "WiFi", 155);
+    auto *btn2 = menu_row_create(m_main_page, "WiFi", 155);
     lv_obj_add_event_cb(btn2, [](lv_event_t *e) {
         ((SettingsApp *)lv_event_get_user_data(e))->create_wifi_page();
     }, LV_EVENT_CLICKED, this);
 
-    auto *btn3 = menu_row_create(m_main_scr, "Wallpaper", 230);
+    auto *btn3 = menu_row_create(m_main_page, "Wallpaper", 230);
     lv_obj_add_event_cb(btn3, [](lv_event_t *e) {
         ((SettingsApp *)lv_event_get_user_data(e))->create_wallpaper_page();
     }, LV_EVENT_CLICKED, this);
 
-    auto *btn4 = menu_row_create(m_main_scr, "About Device", 305);
+    auto *btn4 = menu_row_create(m_main_page, "About Device", 305);
     lv_obj_add_event_cb(btn4, [](lv_event_t *e) {
         ((SettingsApp *)lv_event_get_user_data(e))->create_about_page();
     }, LV_EVENT_CLICKED, this);
@@ -140,9 +166,10 @@ void SettingsApp::create_main_page()
 // ============================================================
 bool SettingsApp::back()
 {
-    lv_obj_t *cur = lv_screen_active();
-    if (cur == m_face_scr || cur == m_wifi_scr || cur == m_about_scr || cur == m_wallpaper_scr) {
-        lv_screen_load(m_main_scr);
+    if (!m_page_stack.empty()) {
+        lv_obj_t *prev = m_page_stack.back();
+        m_page_stack.pop_back();
+        show_page(prev, false);  // don't push back to stack
         return true;
     }
     notifyCoreClosed();
@@ -152,6 +179,12 @@ bool SettingsApp::back()
 bool SettingsApp::close()
 {
     ESP_LOGI(TAG, "Settings closed");
+    // Stop WiFi status timer if active
+    if (m_wifi_status_timer) {
+        lv_timer_del(m_wifi_status_timer);
+        m_wifi_status_timer = nullptr;
+    }
+    // brookesia cleans up the screen and all containers via enable_recycle_resource=1
     return true;
 }
 
@@ -235,24 +268,23 @@ void SettingsApp::refresh_face_list()
 
 void SettingsApp::create_face_page()
 {
-    m_face_scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(m_face_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(m_face_scr, LV_OPA_COVER, LV_PART_MAIN);
-    lv_screen_load(m_face_scr);
+    if (m_face_page) { show_page(m_face_page); return; }
+    m_face_page = create_page_container();
+    show_page(m_face_page);
 
-    lv_obj_t *title = lv_label_create(m_face_scr);
+    lv_obj_t *title = lv_label_create(m_face_page);
     lv_label_set_text(title, "Face Database");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(title, &montserrat_bold_26, LV_PART_MAIN);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
-    m_face_count_label = lv_label_create(m_face_scr);
+    m_face_count_label = lv_label_create(m_face_page);
     lv_obj_set_style_text_color(m_face_count_label, lv_color_hex(0xAAAAFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_face_count_label, &montserrat_bold_20, LV_PART_MAIN);
     lv_obj_align(m_face_count_label, LV_ALIGN_TOP_LEFT, 20, 60);
 
     // Clear All button — two-click confirmation to prevent accidental data loss
-    lv_obj_t *btn_all = lv_button_create(m_face_scr);
+    lv_obj_t *btn_all = lv_button_create(m_face_page);
     lv_obj_set_size(btn_all, 140, 36);
     lv_obj_align(btn_all, LV_ALIGN_TOP_RIGHT, -20, 55);
     lv_obj_set_style_bg_color(btn_all, lv_color_hex(0x662222), 0);
@@ -323,7 +355,7 @@ void SettingsApp::create_face_page()
     }, LV_EVENT_DELETE, nullptr);
 
     // Scrollable face list
-    m_face_list = lv_obj_create(m_face_scr);
+    m_face_list = lv_obj_create(m_face_page);
     lv_obj_set_size(m_face_list, lv_pct(90), lv_pct(60));
     lv_obj_align(m_face_list, LV_ALIGN_TOP_MID, 0, 105);
     lv_obj_set_style_bg_opa(m_face_list, LV_OPA_0, LV_PART_MAIN);
@@ -333,8 +365,8 @@ void SettingsApp::create_face_page()
     lv_obj_set_style_pad_row(m_face_list, 4, LV_PART_MAIN);
     lv_obj_add_flag(m_face_list, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Back button
-    lv_obj_t *btn_back = lv_button_create(m_face_scr);
+    // Back button — shared navigation logic
+    lv_obj_t *btn_back = lv_button_create(m_face_page);
     lv_obj_set_size(btn_back, 80, 36);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, 10, -10);
     lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x444444), 0);
@@ -343,7 +375,7 @@ void SettingsApp::create_face_page()
     lv_obj_center(btxt);
     lv_obj_add_event_cb(btn_back, [](lv_event_t *e) {
         auto *self = (SettingsApp *)lv_event_get_user_data(e);
-        lv_screen_load(self->m_main_scr);
+        self->back();
     }, LV_EVENT_CLICKED, this);
 
     refresh_face_list();
@@ -354,31 +386,30 @@ void SettingsApp::create_face_page()
 // ============================================================
 void SettingsApp::create_wifi_page()
 {
-    m_wifi_scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(m_wifi_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(m_wifi_scr, LV_OPA_COVER, LV_PART_MAIN);
-    lv_screen_load(m_wifi_scr);
+    if (m_wifi_page) { show_page(m_wifi_page); return; }
+    m_wifi_page = create_page_container();
+    show_page(m_wifi_page);
 
-    lv_obj_t *title = lv_label_create(m_wifi_scr);
+    lv_obj_t *title = lv_label_create(m_wifi_page);
     lv_label_set_text(title, "WiFi");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(title, &montserrat_bold_26, LV_PART_MAIN);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
     // Status label
-    m_wifi_status_label = lv_label_create(m_wifi_scr);
+    m_wifi_status_label = lv_label_create(m_wifi_page);
     lv_obj_set_style_text_color(m_wifi_status_label, lv_color_hex(0xAAAAFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_wifi_status_label, &montserrat_bold_20, LV_PART_MAIN);
     lv_obj_align(m_wifi_status_label, LV_ALIGN_TOP_LEFT, 20, 80);
 
     // SSID label
-    m_wifi_ssid_label = lv_label_create(m_wifi_scr);
+    m_wifi_ssid_label = lv_label_create(m_wifi_page);
     lv_obj_set_style_text_color(m_wifi_ssid_label, lv_color_hex(0x88CC88), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_wifi_ssid_label, &montserrat_bold_20, LV_PART_MAIN);
     lv_obj_align(m_wifi_ssid_label, LV_ALIGN_TOP_LEFT, 20, 110);
 
     // IP label
-    m_wifi_ip_label = lv_label_create(m_wifi_scr);
+    m_wifi_ip_label = lv_label_create(m_wifi_page);
     lv_obj_set_style_text_color(m_wifi_ip_label, lv_color_hex(0x888888), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_wifi_ip_label, &montserrat_bold_20, LV_PART_MAIN);
     lv_obj_align(m_wifi_ip_label, LV_ALIGN_TOP_LEFT, 20, 140);
@@ -400,14 +431,14 @@ void SettingsApp::create_wifi_page()
 
     // Connect / Reconnect button
     // Spinner label (shown during provisioning)
-    m_wifi_spinner = lv_label_create(m_wifi_scr);
+    m_wifi_spinner = lv_label_create(m_wifi_page);
     lv_label_set_text(m_wifi_spinner, "...");
     lv_obj_set_style_text_color(m_wifi_spinner, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_wifi_spinner, &montserrat_bold_26, LV_PART_MAIN);
     lv_obj_align(m_wifi_spinner, LV_ALIGN_TOP_MID, 0, 215);
     lv_obj_add_flag(m_wifi_spinner, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t *btn_connect = lv_button_create(m_wifi_scr);
+    lv_obj_t *btn_connect = lv_button_create(m_wifi_page);
     lv_obj_set_size(btn_connect, 200, 50);
     lv_obj_align(btn_connect, LV_ALIGN_TOP_MID, 0, 200);
     lv_obj_set_style_bg_color(btn_connect, lv_color_hex(0x0f3460), 0);
@@ -438,7 +469,7 @@ void SettingsApp::create_wifi_page()
     }, LV_EVENT_CLICKED, this);
 
     // Note text
-    lv_obj_t *note = lv_label_create(m_wifi_scr);
+    lv_obj_t *note = lv_label_create(m_wifi_page);
     lv_label_set_text(note, "Status updates will appear here.\n"
                             "Connect to AP: ESP32-P4-Config\n"
                             "Pass: 12345678 → http://192.168.4.1");
@@ -472,7 +503,7 @@ void SettingsApp::create_wifi_page()
     }, 200, this);
 
     // Back button
-    lv_obj_t *btn_back = lv_button_create(m_wifi_scr);
+    lv_obj_t *btn_back = lv_button_create(m_wifi_page);
     lv_obj_set_size(btn_back, 80, 36);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, 10, -10);
     lv_obj_t *bbtxt = lv_label_create(btn_back);
@@ -484,7 +515,7 @@ void SettingsApp::create_wifi_page()
             lv_timer_del(self->m_wifi_status_timer);
             self->m_wifi_status_timer = nullptr;
         }
-        lv_screen_load(self->m_main_scr);
+        self->back();
     }, LV_EVENT_CLICKED, this);
 }
 
@@ -493,12 +524,11 @@ void SettingsApp::create_wifi_page()
 // ============================================================
 void SettingsApp::create_about_page()
 {
-    m_about_scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(m_about_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(m_about_scr, LV_OPA_COVER, LV_PART_MAIN);
-    lv_screen_load(m_about_scr);
+    if (m_about_page) { show_page(m_about_page); return; }
+    m_about_page = create_page_container();
+    show_page(m_about_page);
 
-    lv_obj_t *title = lv_label_create(m_about_scr);
+    lv_obj_t *title = lv_label_create(m_about_page);
     lv_label_set_text(title, "About Device");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(title, &montserrat_bold_26, LV_PART_MAIN);
@@ -509,7 +539,7 @@ void SettingsApp::create_about_page()
     int y = 80;
 
     auto add_info = [&](const char *key, const char *val) {
-        lv_obj_t *lbl = lv_label_create(m_about_scr);
+        lv_obj_t *lbl = lv_label_create(m_about_page);
         snprintf(buf, sizeof(buf), "%s: %s", key, val);
         lv_label_set_text(lbl, buf);
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xAAAAFF), LV_PART_MAIN);
@@ -531,7 +561,7 @@ void SettingsApp::create_about_page()
     add_info("Brookesia", "0.5.0");
 
     // Back button
-    lv_obj_t *btn_back = lv_button_create(m_about_scr);
+    lv_obj_t *btn_back = lv_button_create(m_about_page);
     lv_obj_set_size(btn_back, 80, 36);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, 10, -10);
     lv_obj_t *bbtxt = lv_label_create(btn_back);
@@ -539,7 +569,7 @@ void SettingsApp::create_about_page()
     lv_obj_center(bbtxt);
     lv_obj_add_event_cb(btn_back, [](lv_event_t *e) {
         auto *self = (SettingsApp *)lv_event_get_user_data(e);
-        lv_screen_load(self->m_main_scr);
+        self->back();
     }, LV_EVENT_CLICKED, this);
 }
 
@@ -685,12 +715,11 @@ void SettingsApp::apply_wallpaper(const std::string &path)
 // ============================================================
 void SettingsApp::create_wallpaper_page()
 {
-    m_wallpaper_scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(m_wallpaper_scr, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(m_wallpaper_scr, LV_OPA_COVER, LV_PART_MAIN);
-    lv_screen_load(m_wallpaper_scr);
+    if (m_wallpaper_page) { show_page(m_wallpaper_page); return; }
+    m_wallpaper_page = create_page_container();
+    show_page(m_wallpaper_page);
 
-    lv_obj_t *title = lv_label_create(m_wallpaper_scr);
+    lv_obj_t *title = lv_label_create(m_wallpaper_page);
     lv_label_set_text(title, "Wallpaper");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(title, &montserrat_bold_26, LV_PART_MAIN);
@@ -700,14 +729,14 @@ void SettingsApp::create_wallpaper_page()
     scan_wallpapers();
 
     // Status label
-    m_wallpaper_status = lv_label_create(m_wallpaper_scr);
+    m_wallpaper_status = lv_label_create(m_wallpaper_page);
     lv_obj_set_style_text_color(m_wallpaper_status, lv_color_hex(0xAAAAFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_wallpaper_status, &montserrat_bold_20, LV_PART_MAIN);
     lv_obj_align(m_wallpaper_status, LV_ALIGN_TOP_LEFT, 20, 60);
 
     // Disk usage label (sum sizes of all files in WP_DIR)
     {
-        lv_obj_t *lbl = lv_label_create(m_wallpaper_scr);
+        lv_obj_t *lbl = lv_label_create(m_wallpaper_page);
         unsigned long used_kb = 0;
         DIR *d = opendir(WP_DIR);
         if (d) {
@@ -751,7 +780,7 @@ void SettingsApp::create_wallpaper_page()
     lv_label_set_text(m_wallpaper_status, buf);
 
     // Scrollable file list
-    m_wallpaper_list = lv_obj_create(m_wallpaper_scr);
+    m_wallpaper_list = lv_obj_create(m_wallpaper_page);
     lv_obj_set_size(m_wallpaper_list, lv_pct(90), lv_pct(55));
     lv_obj_align(m_wallpaper_list, LV_ALIGN_TOP_MID, 0, 95);
     lv_obj_set_style_bg_opa(m_wallpaper_list, LV_OPA_0, LV_PART_MAIN);
@@ -829,7 +858,7 @@ void SettingsApp::create_wallpaper_page()
     }
 
     // "Use Default" button
-    lv_obj_t *btn_def = lv_button_create(m_wallpaper_scr);
+    lv_obj_t *btn_def = lv_button_create(m_wallpaper_page);
     lv_obj_set_size(btn_def, 200, 42);
     lv_obj_align(btn_def, LV_ALIGN_BOTTOM_MID, 0, -60);
     lv_obj_set_style_bg_color(btn_def, lv_color_hex(0x444444), 0);
@@ -844,7 +873,7 @@ void SettingsApp::create_wallpaper_page()
     }, LV_EVENT_CLICKED, this);
 
     // Back button
-    lv_obj_t *btn_back = lv_button_create(m_wallpaper_scr);
+    lv_obj_t *btn_back = lv_button_create(m_wallpaper_page);
     lv_obj_set_size(btn_back, 80, 36);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, 10, -10);
     lv_obj_t *bbtxt = lv_label_create(btn_back);
@@ -852,6 +881,6 @@ void SettingsApp::create_wallpaper_page()
     lv_obj_center(bbtxt);
     lv_obj_add_event_cb(btn_back, [](lv_event_t *e) {
         auto *self = (SettingsApp *)lv_event_get_user_data(e);
-        lv_screen_load(self->m_main_scr);
+        self->back();
     }, LV_EVENT_CLICKED, this);
 }

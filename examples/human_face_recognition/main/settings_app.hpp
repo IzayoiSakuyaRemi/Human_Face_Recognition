@@ -24,12 +24,20 @@ private:
     void apply_wallpaper(const std::string &path);
     void scan_wallpapers();
 
-    // Screens
-    lv_obj_t *m_main_scr = nullptr;
-    lv_obj_t *m_face_scr = nullptr;
-    lv_obj_t *m_wifi_scr = nullptr;
-    lv_obj_t *m_about_scr = nullptr;
-    lv_obj_t *m_wallpaper_scr = nullptr;
+    // Page management — single screen, containers show/hide
+    lv_obj_t *create_page_container();
+    void show_page(lv_obj_t *page, bool push_to_stack = true);
+
+    // Page containers (children of brookesia default screen)
+    lv_obj_t *m_main_page = nullptr;
+    lv_obj_t *m_face_page = nullptr;
+    lv_obj_t *m_wifi_page = nullptr;
+    lv_obj_t *m_about_page = nullptr;
+    lv_obj_t *m_wallpaper_page = nullptr;
+
+    // Navigation stack
+    std::vector<lv_obj_t *> m_page_stack;
+    lv_obj_t *m_current_page = nullptr;
 
     // Face DB
     lv_obj_t *m_face_list = nullptr;
