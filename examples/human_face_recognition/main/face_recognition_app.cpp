@@ -101,9 +101,10 @@ bool FaceRecognitionApp::close()
 {
     ESP_LOGI(TAG, "Camera App closed — stopping all");
     g_voice_paused = true;
-    if (g_recognition_app) g_recognition_app->stop();
-    // brookesia cleans up the screen and all children (canvas, labels, buttons)
-    // with enable_recycle_resource=1
+    if (g_recognition_app) {
+        g_recognition_app->stop();
+        g_recognition_app->reset_ui();  // null canvas/label pointers before brookesia deletes the screen
+    }
     m_exit_btn = nullptr;
     m_ui_created = false;
     return true;

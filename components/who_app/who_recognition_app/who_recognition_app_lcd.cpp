@@ -98,6 +98,19 @@ void WhoRecognitionAppLCD::create_ui(lv_obj_t *parent)
         new lcd_disp::WhoDetectResultLCDDisp(detect_task, m_lcd_disp->get_canvas(), {{255, 0, 0}});
 }
 
+void WhoRecognitionAppLCD::reset_ui()
+{
+    // brookesia's enable_recycle_resource=1 destroys the LVGL screen and all children.
+    // Null all pointers so the next create_ui() call recreates them instead of skipping.
+    m_label = nullptr;
+    m_status_label = nullptr;
+    m_exec_label = nullptr;
+    if (m_lcd_disp && m_lcd_disp->get_canvas()) {
+        // The canvas was destroyed by LVGL screen deletion — prevent dangling pointer
+        m_lcd_disp->reset_canvas();
+    }
+}
+
 WhoRecognitionAppLCD::~WhoRecognitionAppLCD()
 {
     delete m_recognition_button;

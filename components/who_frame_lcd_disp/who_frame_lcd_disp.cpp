@@ -63,6 +63,11 @@ void WhoFrameLCDDisp::create_canvas(lv_obj_t *parent)
     lv_obj_set_size(m_canvas, m_frame_cap_node->get_fb_width(), m_frame_cap_node->get_fb_height());
     bsp_display_unlock();
 }
+
+void WhoFrameLCDDisp::reset_canvas()
+{
+    m_canvas = nullptr;  // LVGL already destroyed it via screen deletion
+}
 #endif
 
 void WhoFrameLCDDisp::task()

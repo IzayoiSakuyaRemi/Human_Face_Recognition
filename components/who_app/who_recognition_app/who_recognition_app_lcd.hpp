@@ -16,6 +16,9 @@ public:
     /// Call this once from the owning PhoneApp's run() method.
     /// If not called (backward compat), construction creates UI on lv_scr_act().
     void create_ui(lv_obj_t *parent);
+    /// Reset all UI pointers after brookesia destroys the screen (recycle_resource).
+    /// Must be called from the owning PhoneApp's close() before brookesia cleanup.
+    void reset_ui();
 
 protected:
     virtual void recognition_result_cb(const std::string &result);
