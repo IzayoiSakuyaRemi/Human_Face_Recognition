@@ -741,7 +741,7 @@ static void lvgl_port_flush_callback(lv_display_t *drv, const lv_area_t *area, u
     if ((disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_RGB || disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_DSI)
             && (disp_ctx->flags.direct_mode || disp_ctx->flags.full_refresh)) {
         if (lv_disp_flush_is_last(drv)) {
-#if 0  /* SW vertical flip replaced by HW esp_lcd_panel_mirror(panel, false, true) */
+            /* FIX: 软件垂直翻转 — 反转行序 */
             {
                 int w = lv_disp_get_hor_res(drv);
                 int h = lv_disp_get_ver_res(drv);
@@ -756,7 +756,6 @@ static void lvgl_port_flush_callback(lv_display_t *drv, const lv_area_t *area, u
                     }
                 }
             }
-#endif  /* HW mirror_y replaces SW flip */
             /* If the interface is I80 or SPI, this step cannot be used for drawing. */
             esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, 0, 0, lv_disp_get_hor_res(drv), lv_disp_get_ver_res(drv), color_map);
             /* Waiting for the last frame buffer to complete transmission */
