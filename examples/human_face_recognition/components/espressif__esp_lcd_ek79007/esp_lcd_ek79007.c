@@ -121,6 +121,7 @@ static const ek79007_lcd_init_cmd_t vendor_specific_init_default[] = {
     {0x85, (uint8_t []){0xE3}, 1, 0},
     {0x86, (uint8_t []){0x88}, 1, 0},
     {0x11, (uint8_t []){0x00}, 0, 120},
+    {0x29, (uint8_t []){0x00}, 0, 0},
 };
 
 static esp_err_t panel_ek79007_send_init_cmds(ek79007_panel_t *ek79007)
