@@ -113,7 +113,9 @@ bool WhoRecognitionAppLCD::run()
     for (const auto &frame_cap_node : m_frame_cap->get_all_nodes()) {
         ret &= frame_cap_node->run(4096, 2, 0);
     }
-    ret &= m_lcd_disp->run(2560, 2, 0);
+    if (m_lcd_disp) {
+        ret &= m_lcd_disp->run(2560, 2, 0);
+    }
     ret &= m_recognition->get_detect_task()->run(3584, 2, 1);
     ret &= m_recognition->get_recognition_task()->run(3584, 2, 1);
     return ret;
@@ -121,29 +123,29 @@ bool WhoRecognitionAppLCD::run()
 
 void WhoRecognitionAppLCD::recognition_result_cb(const std::string &result)
 {
-    m_text_result_lcd_disp->save_text_result(result);
+    if (m_text_result_lcd_disp) m_text_result_lcd_disp->save_text_result(result);
     strncpy(g_last_recog_face, result.c_str(), sizeof(g_last_recog_face) - 1);
 }
 
 void WhoRecognitionAppLCD::detect_result_cb(const detect::WhoDetect::result_t &result)
 {
-    m_detect_result_lcd_disp->save_detect_result(result);
+    if (m_detect_result_lcd_disp) m_detect_result_lcd_disp->save_detect_result(result);
 }
 
 void WhoRecognitionAppLCD::lcd_disp_cb(who::cam::cam_fb_t *fb)
 {
-    m_detect_result_lcd_disp->lcd_disp_cb(fb);
-    m_text_result_lcd_disp->lcd_disp_cb(fb);
+    if (m_detect_result_lcd_disp) m_detect_result_lcd_disp->lcd_disp_cb(fb);
+    if (m_text_result_lcd_disp) m_text_result_lcd_disp->lcd_disp_cb(fb);
 }
 
 void app::WhoRecognitionAppLCD::recognition_cleanup()
 {
-    m_text_result_lcd_disp->cleanup();
+    if (m_text_result_lcd_disp) m_text_result_lcd_disp->cleanup();
 }
 
 void app::WhoRecognitionAppLCD::detect_cleanup()
 {
-    m_detect_result_lcd_disp->cleanup();
+    if (m_detect_result_lcd_disp) m_detect_result_lcd_disp->cleanup();
 }
 
 void WhoRecognitionAppLCD::set_status_text(const char *text)
