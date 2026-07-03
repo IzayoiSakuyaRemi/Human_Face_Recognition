@@ -29,6 +29,7 @@
 #include "who_lvgl_lcd.hpp"
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
+#include "hand_gesture_task.hpp"
 // wallpaper now loaded from SD card or NVS only (no compiled-in default)
 #include <cstdio>
 #include <cstring>
@@ -38,6 +39,7 @@ extern char g_last_recog_face[64];
 static const char *TAG = "app_main";
 who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
 bool g_voice_paused = false;
+who::gesture::WhoHandGestureTask *g_hand_gesture_task = nullptr;
 
 // Brookesia globals
 static ESP_Brookesia_Phone *g_phone = nullptr;
@@ -538,6 +540,37 @@ extern "C" void app_main(void)
     g_recognition_app = recognition_app;
 
     g_espdl_mutex = xSemaphoreCreateMutex();
+
+    // ---- Hand Gesture Recognition ----
+    {
+        auto *hand_detect = new HandDetect(
+            static_cast<HandDetect::model_type_t>(CONFIG_DEFAULT_HAND_DETECT_MODEL), false);
+        auto *gesture_recognizer = new HandGestureRecognizer(
+            static_cast<HandGestureCls::model_type_t>(CONFIG_DEFAULT_HAND_GESTURE_CLS_MODEL));
+
+        auto *hand_task = new who::gesture::WhoHandGestureTask(
+            "HandGesture", frame_cap->get_last_node(), hand_detect, gesture_recognizer);
+        hand_task->set_fps(5.0f);
+
+        hand_task->set_result_cb([](const std::string &gesture_name, float score) {
+            if (g_recognition_app) {
+                char buf[64];
+                if (gesture_name.empty()) {
+                    snprintf(buf, sizeof(buf), "Gesture: --");
+                } else {
+                    snprintf(buf, sizeof(buf), "Gesture: %s (%.0f%%)",
+                             gesture_name.c_str(), score * 100);
+                }
+                g_recognition_app->set_exec_text(buf);
+            }
+            if (!gesture_name.empty()) {
+                ESP_LOGI("HandGesture", "Detected: %s (score=%.2f)", gesture_name.c_str(), score);
+            }
+        });
+
+        hand_task->run(4096, 2, 1);
+        g_hand_gesture_task = hand_task;
+    }
 
     // Heartbeat timer: report online every 60s
     esp_timer_handle_t hb_timer = nullptr;
