@@ -542,10 +542,11 @@ extern "C" void app_main(void)
 
     // ---- Hand Gesture Recognition ----
     static HandGesturePipeline *hand_pipeline = nullptr;
+    static auto *hand_frame_cap = frame_cap;
     {
         hand_pipeline = new HandGesturePipeline();
-        xTaskCreatePinnedToCore([frame_cap](void *) {
-            auto *last_node = frame_cap->get_last_node();
+        xTaskCreatePinnedToCore([](void *) {
+            auto *last_node = hand_frame_cap->get_last_node();
             while (true) {
                 xEventGroupWaitBits(last_node->get_event_group(),
                     who::frame_cap::WhoFrameCapNode::NEW_FRAME, pdTRUE, pdFALSE, portMAX_DELAY);
