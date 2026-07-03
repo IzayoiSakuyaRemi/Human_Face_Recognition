@@ -741,19 +741,28 @@ static void lvgl_port_flush_callback(lv_display_t *drv, const lv_area_t *area, u
     if ((disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_RGB || disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_DSI)
             && (disp_ctx->flags.direct_mode || disp_ctx->flags.full_refresh)) {
         if (lv_disp_flush_is_last(drv)) {
-            /* SW vertical flip — uint32_t* optimized, ~3.5ms/frame */
+            /* SW vertical + horizontal flip (180° rotation) */
             {
                 int w = lv_disp_get_hor_res(drv);
                 int h = lv_disp_get_ver_res(drv);
-                uint32_t *p32 = (uint32_t *)color_map;
-                int w32 = w / 2;
+                uint16_t *p16 = (uint16_t *)color_map;
+                // Vertical: swap top/bottom row pairs
                 for (int y = 0; y < h / 2; y++) {
-                    uint32_t *r1 = p32 + y * w32;
-                    uint32_t *r2 = p32 + (h - 1 - y) * w32;
-                    for (int x = 0; x < w32; x++) {
-                        uint32_t t = r1[x];
+                    uint16_t *r1 = p16 + y * w;
+                    uint16_t *r2 = p16 + (h - 1 - y) * w;
+                    for (int x = 0; x < w; x++) {
+                        uint16_t t = r1[x];
                         r1[x] = r2[x];
                         r2[x] = t;
+                    }
+                }
+                // Horizontal: reverse each row's pixels
+                for (int y = 0; y < h; y++) {
+                    uint16_t *row = p16 + y * w;
+                    for (int x = 0; x < w / 2; x++) {
+                        uint16_t t = row[x];
+                        row[x] = row[w - 1 - x];
+                        row[w - 1 - x] = t;
                     }
                 }
             }
