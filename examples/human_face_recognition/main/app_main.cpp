@@ -414,7 +414,7 @@ extern "C" void app_main(void)
             }
         };
         lv_display_t *disp = bsp_display_start_with_config(&cfg);
-        lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
+        // BSP already sets DIRECT_MODE with avoid_tearing — no FULL override needed
         bsp_display_backlight_on();
 
         // Force GPIO 20 as backlight control (override BSP default GPIO 26)
