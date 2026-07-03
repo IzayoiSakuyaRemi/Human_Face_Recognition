@@ -656,8 +656,8 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
         .flags =
             {
                 .swap_xy = 0,
-                .mirror_x = 1,
-                .mirror_y = 1,
+                .mirror_x = 0,
+                .mirror_y = 0,
             },
         .driver_data = (void *)&dev_addr,
     };
