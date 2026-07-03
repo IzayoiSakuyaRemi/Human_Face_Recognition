@@ -74,7 +74,7 @@ void WhoTaskState::print_task_status()
 #endif
                m_task_state[task_status_array[i].eCurrentState].c_str(),
                (unsigned int)task_status_array[i].uxCurrentPriority,
-               task_status_array[i].usStackHighWaterMark,
+               (unsigned int)task_status_array[i].usStackHighWaterMark,
                (unsigned long)task_status_array[i].ulRunTimeCounter,
                (unsigned long)(task_status_array[i].ulRunTimeCounter * 100 / total_run_time));
     }
