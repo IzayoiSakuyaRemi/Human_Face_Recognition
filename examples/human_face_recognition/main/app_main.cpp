@@ -399,8 +399,8 @@ extern "C" void app_main(void)
         };
         bsp_display_cfg_t cfg = {
             .lvgl_port_cfg = lvgl_port_cfg,
-            .buffer_size = BSP_LCD_H_RES * 50,  // partial buffer — DIRECT_MODE (matching working ref project)
-            .double_buffer = 0,  // single buffer
+            .buffer_size = BSP_LCD_H_RES * BSP_LCD_V_RES,  // full screen
+            .double_buffer = 1,
             .hw_cfg = {
                 .dsi_bus = {
                     .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
@@ -408,12 +408,13 @@ extern "C" void app_main(void)
                 }
             },
             .flags = {
-                .buff_dma = false,
+                .buff_dma = true,
                 .buff_spiram = true,
                 .sw_rotate = false,
             }
         };
         lv_display_t *disp = bsp_display_start_with_config(&cfg);
+        lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
         bsp_display_backlight_on();
 
         // Force GPIO 20 as backlight control (override BSP default GPIO 26)
