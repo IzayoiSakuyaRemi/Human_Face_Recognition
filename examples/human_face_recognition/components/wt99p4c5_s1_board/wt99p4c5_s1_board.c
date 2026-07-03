@@ -702,7 +702,7 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
                                               .rotation =
                                                   {
                                                       .swap_xy = false,
-                                                      .mirror_x = true,
+                                                      .mirror_x = false,
                                                       .mirror_y = true,
                                                   },
                                               .flags = {

@@ -2819,7 +2819,14 @@ CONFIG_ESP_UTILS_CONF_MEM_GEN_ALLOC_TYPE=0
 # end of SPIFFS - Virtual File System
 
 #
-# Display — handled by wt99p4c5_s1_board BSP (hardcoded, no Kconfig)
+# Display
+#
+CONFIG_BSP_LCD_COLOR_FORMAT_RGB565=y
+# CONFIG_BSP_LCD_COLOR_FORMAT_RGB888 is not set
+CONFIG_BSP_LCD_TYPE_1024_600=y
+# CONFIG_BSP_LCD_TYPE_1280_800 is not set
+# CONFIG_BSP_LCD_TYPE_HDMI is not set
+# end of Display
 # end of Board Support Package (ESP32-P4)
 
 #
