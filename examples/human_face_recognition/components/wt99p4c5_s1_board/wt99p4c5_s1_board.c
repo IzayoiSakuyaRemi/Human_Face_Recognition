@@ -703,7 +703,7 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
                                                   {
                                                       .swap_xy = false,
                                                       .mirror_x = false,
-                                                      .mirror_y = true,
+                                                      .mirror_y = false,
                                                   },
                                               .flags = {
                                                   .buff_dma = cfg->flags.buff_dma,
