@@ -65,7 +65,7 @@ bool FaceRecognitionApp::run()
     // Create recognition UI (canvas, labels, buttons) on this screen
     if (g_recognition_app) {
         g_recognition_app->create_ui(scr);
-        g_recognition_app->resume();  // restart pipeline tasks after close() paused them
+        g_recognition_app->run();  // restart pipeline tasks (stopped by close())
         m_ui_created = true;
     }
 
@@ -100,10 +100,10 @@ bool FaceRecognitionApp::resume()
 
 bool FaceRecognitionApp::close()
 {
-    ESP_LOGI(TAG, "Camera App closed — pausing pipeline");
+    ESP_LOGI(TAG, "Camera App closed — stopping pipeline");
     g_voice_paused = true;
     if (g_recognition_app) {
-        g_recognition_app->pause();      // pause only — tasks stay alive
+        g_recognition_app->stop();       // free camera DMA buffers + CPU
         g_recognition_app->reset_ui();   // null canvas/label pointers before brookesia deletes the screen
     }
     m_exit_btn = nullptr;
