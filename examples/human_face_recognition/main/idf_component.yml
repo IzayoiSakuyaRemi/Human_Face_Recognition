@@ -10,4 +10,6 @@ dependencies:
     path: ../managed_components/espressif__esp_hosted
     rules:
     - if: target in [esp32p4, esp32h2]
-  # wt99p4c5_s1_board is a local component at components/wt99p4c5_s1_board/
+  # wt99p4c5_s1_board is a local component at components/wt99p4c5_s1_board/
+  esp32_p4_function_ev_board:
+    version: '*'
