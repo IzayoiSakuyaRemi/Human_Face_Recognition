@@ -8,7 +8,7 @@ static const char *DETECT_MODEL_PATH = "/sdcard/models/p4/espdet_pico_224_224_ha
 static const char *CLS_MODEL_PATH    = "/sdcard/models/p4/mobilenetv2_0_5_128_128_gesture.espdl";
 
 // Hand detect: ESPDET_PICO with 3 anchor stages
-static const std::vector<std::vector<int>> DETECT_STAGES = {{8,8,4,4}, {16,16,8,8}, {32,32,16,16}};
+static const std::vector<dl::detect::anchor_point_stage_t> DETECT_STAGES = {{8,8,4,4}, {16,16,8,8}, {32,32,16,16}};
 static const float DETECT_SCORE_THR = 0.25f;
 static const float DETECT_NMS_THR   = 0.5f;
 
@@ -64,7 +64,8 @@ std::vector<HandGesturePipeline::GestureResult> HandGesturePipeline::run(const d
     if (!m_ok) return results;
 
     // Step 1: hand detection
-    m_detect_model->forward(img);
+    m_detect_preprocess->preprocess(img);
+    m_detect_model->run(m_detect_preprocess->get_model_input());
     m_detect_postprocess->postprocess();
     auto &det_results = m_detect_postprocess->get_result(img.width, img.height);
 
@@ -73,7 +74,9 @@ std::vector<HandGesturePipeline::GestureResult> HandGesturePipeline::run(const d
     // Step 2: classify each detected hand
     std::vector<dl::cls::result_t> cls_results;
     for (auto &d : det_results) {
-        m_cls_model->forward(img, d.box);
+        std::vector<int> crop = {d.box[0], d.box[1], d.box[2], d.box[3]};
+        m_cls_preprocess->preprocess(img, crop);
+        m_cls_model->run(m_cls_preprocess->get_model_input());
         auto &r = m_cls_postprocess->postprocess();
         cls_results.insert(cls_results.end(), r.begin(), r.end());
     }
