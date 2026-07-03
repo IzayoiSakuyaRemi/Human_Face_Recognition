@@ -30,7 +30,7 @@ WhoFrameCap *get_mipi_csi_frame_cap_pipeline()
 {
     auto cam = new WhoP4Cam(
         V4L2_PIX_FMT_RGB565,
-        MODEL_TIME + 3,
+        MODEL_TIME + 1,  // reduced from +3: 6→4 buffers, saves ~2.5MB PSRAM
         V4L2_MEMORY_USERPTR,
         false,   // vertical_flip
         false    // horizontal_flip = OFF（配合 panel mirror_x=true 修正 WT99P4C5-S1 镜像）
