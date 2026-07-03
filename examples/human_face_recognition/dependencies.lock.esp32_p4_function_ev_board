@@ -10,15 +10,15 @@ dependencies:
       type: service
     version: 0.5.3
   espressif/dl_fft:
-    component_hash: ced3cf28cc70452b7859c06f4e5059215167254a2047e34c893d6f501ccd6ea2
+    component_hash: 2f319e72f3ab6f673c83849d6a14b68c21165d4dce24e12af7c13714ba35a6e0
     dependencies:
     - name: idf
       require: private
       version: '>=5.0'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
-    version: 0.4.0
+    version: 0.5.0
   espressif/eppp_link:
     component_hash: 04f7f31868b8ae6014c96132740a192d09611a6e46aaa7038c865ffc7e26b38f
     dependencies:
@@ -52,31 +52,33 @@ dependencies:
       type: service
     version: 0.5.0
   espressif/esp-dl:
-    component_hash: 5130cf5ba89cb43865da942ddf23b39b1520855907cd91b68d3ad65dcf2305b6
     dependencies:
-    - name: espressif/dl_fft
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=0.3.1'
-    - name: espressif/esp-dsp
-      registry_url: https://components.espressif.com
-      require: private
-      version: ==1.7.0
+    - matches:
+      - if: target in ["esp32", "esp32c2", "esp32c3", "esp32c6", "esp32p4", "esp32s2", "esp32s3"]
+        version: '>=5.3'
+      - if: target == esp32c5
+        version: '>=5.5'
+      - if: target == esp32s31
+        version: '>=6.0'
+      name: idf
     - name: espressif/esp_new_jpeg
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^0.6.1
-    - name: idf
-      require: private
-      version: '>=5.3'
+      version: ^1
+    - name: espressif/dl_fft
+      version: '>=0.4.0'
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: D:\123\esp-dl-master\esp-dl-master\esp-dl
+      type: local
     targets:
     - esp32
-    - esp32s3
+    - esp32c2
+    - esp32c3
+    - esp32c5
+    - esp32c6
     - esp32p4
-    version: 3.2.4
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    version: 3.3.6
   espressif/esp-dsp:
     component_hash: 42dce32d46ac93dc11f60d368e29a830e9661c7345d794b8a45c343479cae636
     dependencies:
@@ -301,21 +303,24 @@ dependencies:
       type: service
     version: 2.8.0~1
   espressif/esp_new_jpeg:
-    component_hash: e6af208a875abd0ecfc0213d3751a11b504b463ebde6930f24096047925fa5c1
+    component_hash: e1e7e6991193c41ed6c9fc386702aa7821433319e7aa9c3147cd3236310cd69c
     dependencies: []
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     targets:
     - esp32
     - esp32s2
     - esp32s3
+    - esp32s31
     - esp32p4
     - esp32c2
     - esp32c3
     - esp32c5
     - esp32c6
-    version: 0.6.1
+    - esp32c61
+    - esp32h4
+    version: 1.0.2
   espressif/esp_sccb_intf:
     component_hash: c071b189e49f40940722aea01a5489f873385cc39cd5b14012341135b85d1a9d
     dependencies:
@@ -393,6 +398,15 @@ dependencies:
       path: D:\works\esp-who-master\examples\human_face_recognition\managed_components\espressif__esp_wifi_remote
       type: local
     version: 1.6.1
+  espressif/hand_detect:
+    dependencies:
+    - name: espressif/esp-dl
+      override_path: ../../esp-dl
+      version: '>=3.2.0'
+    source:
+      path: D:\123\esp-dl-master\esp-dl-master\models\hand_detect
+      type: local
+    version: 0.2.0
   espressif/human_face_detect:
     component_hash: db0eb640104c69b7b07b6629ab80b270fc446fee32909832d2ac7691b4e66a3e
     dependencies:
@@ -475,10 +489,11 @@ direct_dependencies:
 - espressif/esp_lvgl_port
 - espressif/esp_video
 - espressif/esp_wifi_remote
+- espressif/hand_detect
 - espressif/human_face_recognition
 - espressif/usb_host_uvc
 - idf
 - lvgl/lvgl
-manifest_hash: 674bfaa4d7b3edd660e0dce5e57092db93fd8f33e5cc1f1ac9896dab172b4df6
+manifest_hash: f3a1903280265d9a89bf46477825937ed41fc0e4fd1a56cc799dd384db509115
 target: esp32p4
 version: 2.0.0
