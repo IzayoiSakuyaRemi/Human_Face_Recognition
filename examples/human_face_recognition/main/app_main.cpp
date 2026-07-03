@@ -29,6 +29,7 @@
 #include "who_lvgl_lcd.hpp"
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
+#include "hand_gesture.hpp"
 // wallpaper now loaded from SD card or NVS only (no compiled-in default)
 #include <cstdio>
 #include <cstring>
@@ -538,6 +539,29 @@ extern "C" void app_main(void)
     g_recognition_app = recognition_app;
 
     g_espdl_mutex = xSemaphoreCreateMutex();
+
+    // ---- Hand Gesture Recognition ----
+    static HandGesturePipeline *hand_pipeline = nullptr;
+    static auto *s_frame_cap = frame_cap;
+    hand_pipeline = new HandGesturePipeline();
+    xTaskCreatePinnedToCore([](void *) {
+        auto *last_node = s_frame_cap->get_last_node();
+        while (true) {
+            xEventGroupWaitBits(last_node->get_event_group(),
+                who::frame_cap::WhoFrameCapNode::NEW_FRAME, pdTRUE, pdFALSE, portMAX_DELAY);
+            auto fb = last_node->cam_fb_peek();
+            if (!fb || !hand_pipeline) continue;
+            if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(50))) {
+                dl::image::img_t img = static_cast<dl::image::img_t>(*fb);
+                auto results = hand_pipeline->run(img);
+                xSemaphoreGive(g_espdl_mutex);
+                if (!results.empty()) {
+                    ESP_LOGI("HandGesture", "%s (%.0f%%)", results[0].name.c_str(), results[0].score * 100);
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }, "hand_gesture", 4096, nullptr, 2, nullptr, 1);
 
     // Heartbeat timer: report online every 60s
     esp_timer_handle_t hb_timer = nullptr;
