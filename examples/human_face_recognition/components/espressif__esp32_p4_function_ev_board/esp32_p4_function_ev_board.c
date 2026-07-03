@@ -924,8 +924,8 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
         /* Rotation values must be same as used in esp_lcd for initial settings of the screen */
         .rotation = {
             .swap_xy = false,
-            .mirror_x = true,
-            .mirror_y = true,   // WT99P4C5-S1 panel — MADCTL WORKS (verified on working reference project)
+            .mirror_x = false,
+            .mirror_y = false,
         },
 #if LVGL_VERSION_MAJOR >= 9
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
