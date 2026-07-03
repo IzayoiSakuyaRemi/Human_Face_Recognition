@@ -741,23 +741,7 @@ static void lvgl_port_flush_callback(lv_display_t *drv, const lv_area_t *area, u
     if ((disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_RGB || disp_ctx->disp_type == LVGL_PORT_DISP_TYPE_DSI)
             && (disp_ctx->flags.direct_mode || disp_ctx->flags.full_refresh)) {
         if (lv_disp_flush_is_last(drv)) {
-            /* SW vertical flip — EK79007 MADCTL ignored (UPDN/SHLR hardwired).
-             * uint32_t*: 2px/swap, ~3.5ms/frame (vs ~13.7ms naive) */
-            {
-                int w = lv_disp_get_hor_res(drv);
-                int h = lv_disp_get_ver_res(drv);
-                uint32_t *p32 = (uint32_t *)color_map;
-                int w32 = w / 2;
-                for (int y = 0; y < h / 2; y++) {
-                    uint32_t *r1 = p32 + y * w32;
-                    uint32_t *r2 = p32 + (h - 1 - y) * w32;
-                    for (int x = 0; x < w32; x++) {
-                        uint32_t t = r1[x];
-                        r1[x] = r2[x];
-                        r2[x] = t;
-                    }
-                }
-            }
+            /* WT99P4C5-S1 correct BSP handles orientation via MADCTL mirror */
             /* If the interface is I80 or SPI, this step cannot be used for drawing. */
             esp_lcd_panel_draw_bitmap(disp_ctx->panel_handle, 0, 0, lv_disp_get_hor_res(drv), lv_disp_get_ver_res(drv), color_map);
             /* Waiting for the last frame buffer to complete transmission */
