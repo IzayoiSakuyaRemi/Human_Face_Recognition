@@ -64,22 +64,19 @@ void WhoTaskState::print_task_status()
     printf("----------------------------------------------------------------------------------------------\n");
 
     for (UBaseType_t i = 0; i < num_tasks; i++) {
-#if CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U32
-        printf("%-15s | %-8x | %-9s | %-8u | %-11lu | %-11lu | %-12lu |\n",
-#else
-        printf("%-15s | %-8x | %-9s | %-8u | %-11lu | %-11llu | %-12llu |\n",
-#endif
+        printf("%-15s | %-8lx | %-9s | %-8u | %-11u | %-11lu | %-12lu |\n",
                task_status_array[i].pcTaskName,
+               (unsigned long)
 #if CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID
                task_status_array[i].xCoreID,
 #else
                0,
 #endif
                m_task_state[task_status_array[i].eCurrentState].c_str(),
-               task_status_array[i].uxCurrentPriority,
+               (unsigned int)task_status_array[i].uxCurrentPriority,
                task_status_array[i].usStackHighWaterMark,
-               task_status_array[i].ulRunTimeCounter,
-               task_status_array[i].ulRunTimeCounter * 100 / total_run_time);
+               (unsigned long)task_status_array[i].ulRunTimeCounter,
+               (unsigned long)(task_status_array[i].ulRunTimeCounter * 100 / total_run_time));
     }
     printf("\n");
     heap_caps_free(task_status_array);
