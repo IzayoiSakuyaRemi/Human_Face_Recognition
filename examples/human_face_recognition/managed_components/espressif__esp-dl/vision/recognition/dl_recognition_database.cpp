@@ -130,18 +130,8 @@ esp_err_t DataBase::enroll_feat(TensorBase *feat)
     float *feat_copy = (float *)heap_caps_malloc(m_meta.feat_len * sizeof(float), MALLOC_CAP_SPIRAM);
     memcpy(feat_copy, feat->data, feat->get_bytes());
 
-    // Find smallest available ID (fill gaps from deleted entries)
-    uint16_t new_id = 1;
-    {
-        std::vector<uint16_t> existing = get_feat_ids();
-        std::sort(existing.begin(), existing.end());
-        for (auto id : existing) {
-            if (id == new_id) new_id++;
-            else if (id > new_id) break; // gap found
-        }
-    }
-    m_feats.emplace_back(new_id, feat_copy);
-    if (new_id > m_meta.num_feats_total) m_meta.num_feats_total = new_id;
+    m_feats.emplace_back(m_meta.num_feats_total + 1, feat_copy);
+    m_meta.num_feats_total++;
     m_meta.num_feats_valid++;
 
     size_t size = 0;
@@ -276,15 +266,6 @@ std::vector<result_t> DataBase::query_feat(TensorBase *feat, float thr, int top_
     return results;
 }
 
-std::vector<uint16_t> DataBase::get_feat_ids()
-{
-    std::vector<uint16_t> ids;
-    for (auto &it : m_feats) {
-        ids.push_back(it.id);
-    }
-    return ids;
-}
-
 void DataBase::print()
 {
     printf("\n");
@@ -301,6 +282,15 @@ void DataBase::print()
         printf("\n");
     }
     printf("\n");
+}
+
+std::vector<uint16_t> DataBase::get_feat_ids()
+{
+    std::vector<uint16_t> ids;
+    for (const auto &f : m_feats) {
+        ids.push_back(f.id);
+    }
+    return ids;
 }
 
 } // namespace recognition
