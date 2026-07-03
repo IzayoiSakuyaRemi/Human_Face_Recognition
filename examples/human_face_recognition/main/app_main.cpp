@@ -544,7 +544,7 @@ extern "C" void app_main(void)
     static HandGesturePipeline *hand_pipeline = nullptr;
     {
         hand_pipeline = new HandGesturePipeline();
-        xTaskCreatePinnedToCore([](void *) {
+        xTaskCreatePinnedToCore([frame_cap](void *) {
             auto *last_node = frame_cap->get_last_node();
             while (true) {
                 xEventGroupWaitBits(last_node->get_event_group(),
