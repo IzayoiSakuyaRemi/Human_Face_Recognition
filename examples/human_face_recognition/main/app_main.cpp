@@ -29,7 +29,8 @@
 #include "who_lvgl_lcd.hpp"
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
-#include "hand_gesture.hpp"
+#include "speaker_verification.hpp"
+#include "dl_feat_verification_database.hpp"
 // wallpaper now loaded from SD card or NVS only (no compiled-in default)
 #include <cstdio>
 #include <cstring>
@@ -54,6 +55,16 @@ EventGroupHandle_t g_recog_event_group = nullptr;
 static esp_codec_dev_handle_t g_mic_handle = nullptr;
 static SemaphoreHandle_t g_espdl_mutex = nullptr;
 static volatile int g_skip_detect_count = 0;
+
+// Speaker verification
+static SpeakerVerification *g_speaker_verifier = nullptr;
+static dl::feat::FeatVerificationDatabase *g_voice_db = nullptr;
+static bool g_voice_enrolling = false;
+static bool g_voice_verifying = false;
+static int g_voice_collect_samples = 0;
+static int16_t *g_voice_enroll_buf = nullptr;
+static float *g_enrolled_embedding = nullptr; // last enrolled embedding for display comparison
+static int g_embedding_dim = 0;
 
 // Simple VAD + AGC state for voice preprocessing
 struct VoiceAudioState {
@@ -148,6 +159,66 @@ static void voice_recognition_task(void *arg)
         // ---- Simple AGC: normalize audio volume ----
         apply_agc(audio_buf, chunksize, 2000.0f);
 
+        // ---- Speaker verification audio buffering ----
+        if ((g_voice_enrolling || g_voice_verifying) && g_voice_enroll_buf) {
+            int max_samples = 16000 * 6; // always 6 seconds
+            int remaining = max_samples - g_voice_collect_samples;
+            if (remaining > 0) {
+                int to_copy = (chunksize < remaining) ? chunksize : remaining;
+                memcpy(g_voice_enroll_buf + g_voice_collect_samples, audio_buf, to_copy * sizeof(int16_t));
+                g_voice_collect_samples += to_copy;
+            }
+            if (g_voice_collect_samples >= max_samples) {
+                // Enough audio collected — run speaker verification
+                int total = g_voice_collect_samples;
+                g_voice_collect_samples = 0;
+                bool was_enrolling = g_voice_enrolling;
+                g_voice_enrolling = false;
+                g_voice_verifying = false;
+                if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(100))) {
+                    float *emb = g_speaker_verifier->run(g_voice_enroll_buf, total);
+                    xSemaphoreGive(g_espdl_mutex);
+                    if (emb) {
+                        if (was_enrolling) {
+                            g_voice_db->enroll("user1", emb);
+                            g_voice_db->build();
+                            // Save local copy for score display
+                            if (g_enrolled_embedding)
+                                memcpy(g_enrolled_embedding, emb, g_embedding_dim * sizeof(float));
+                            ESP_LOGI(TAG, "Voice enrolled!"); g_voice_db->print();
+                            if (g_recognition_app) {
+                                g_recognition_app->set_status_text("Voice enrolled OK");
+                                g_recognition_app->set_exec_text("Speaker registered");
+                            }
+                        } else {
+                            g_voice_db->verify_max_cosine(emb, 0.25f);
+                            // Compute similarity against enrolled embedding for display
+                            float score = g_enrolled_embedding ?
+                                g_speaker_verifier->compute_similarity(emb, g_enrolled_embedding) : 0.0f;
+                            const char *result = (score > 0.25f) ? "MATCH" : "NO MATCH";
+                            ESP_LOGI(TAG, "Voice: score=%.4f -> %s", score, result);
+                            if (g_recognition_app) {
+                                char buf[48];
+                                snprintf(buf, sizeof(buf), "Voice: %.2f %s", score, result);
+                                g_recognition_app->set_exec_text(buf);
+                            }
+                        }
+                        free(emb);
+                    } else {
+                        ESP_LOGE(TAG, "Speaker verification failed to extract embedding.");
+                        if (g_recognition_app)
+                            g_recognition_app->set_exec_text("Voice fail");
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Could not acquire mutex for speaker verification.");
+                    g_voice_enrolling = false;
+                    g_voice_verifying = false;
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
         // ---- Simple energy-based VAD: only feed speech to MultiNet ----
         float frame_energy = 0;
         for (int i = 0; i < chunksize; i++) frame_energy += (float)audio_buf[i] * audio_buf[i];
@@ -188,38 +259,53 @@ static void voice_recognition_task(void *arg)
             if (state == ESP_MN_STATE_DETECTED) {
                 esp_mn_results_t *r = multinet->get_results(mn_data);
                 const char *cmd = "Cmd: Unknown";
-                switch (r->command_id[0]) {
+                int cmd_id = r->command_id[0];
+                switch (cmd_id) {
                     case 1: cmd = "Cmd: Open TV"; break;
                     case 2: cmd = "Cmd: Close TV"; break;
                     case 3: cmd = "Cmd: Open Door"; break;
                     case 4: cmd = "Cmd: Close Door"; break;
                     case 5: cmd = "Cmd: Identify"; break;
+                    case 6: cmd = "Cmd: Enroll Voice"; break;
+                    case 7: cmd = "Cmd: Verify Voice"; break;
                 }
                 ESP_LOGI(TAG, "Detected: %s (prob=%.2f)", cmd,
                          r->num > 0 ? r->prob[0] : 0.0f);
 
-                // Every voice command triggers face recognition
-                if (g_recog_event_group) {
-                    // Skip fewer frames after detection (15 = ~500ms)
-                    g_skip_detect_count = 15;
-                    xEventGroupSetBits(g_recog_event_group, 32);
-                }
-
-                bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
-                const char *who = authorized ? g_last_recog_face : "stranger";
-                const char *result = authorized ? "allow" : "alarm";
-
-                if (g_recognition_app) {
-                    g_recognition_app->set_status_text(cmd);
-                    if (authorized) {
-                        g_recognition_app->set_exec_text("Allow: Yes");
-                    } else {
-                        g_recognition_app->set_exec_text("Alarm!");
+                // Voice enrollment / verification commands
+                if (cmd_id == 6 && g_speaker_verifier && g_voice_enroll_buf) {
+                    g_voice_enrolling = true;
+                    g_voice_collect_samples = 0;
+                    g_voice_verifying = false;
+                    if (g_recognition_app) {
+                        g_recognition_app->set_status_text("Enrolling voice... speak now");
+                        g_recognition_app->set_exec_text("Recording 6s...");
                     }
-                }
-
-                // Combined event: who + what command + result
-                {
+                } else if (cmd_id == 7 && g_speaker_verifier && g_voice_db) {
+                    g_voice_verifying = true;
+                    g_voice_collect_samples = 0;
+                    g_voice_enrolling = false;
+                    if (g_recognition_app) {
+                        g_recognition_app->set_status_text("Verify voice... speak now");
+                        g_recognition_app->set_exec_text("Recording 6s...");
+                    }
+                } else {
+                    // Normal face recognition commands (IDs 1-5)
+                    if (g_recog_event_group) {
+                        g_skip_detect_count = 15;
+                        xEventGroupSetBits(g_recog_event_group, 32);
+                    }
+                    bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
+                    const char *who = authorized ? g_last_recog_face : "stranger";
+                    const char *result = authorized ? "allow" : "alarm";
+                    if (g_recognition_app) {
+                        g_recognition_app->set_status_text(cmd);
+                        if (authorized) {
+                            g_recognition_app->set_exec_text("Allow: Yes");
+                        } else {
+                            g_recognition_app->set_exec_text("Alarm!");
+                        }
+                    }
                     char json_buf[128];
                     snprintf(json_buf, sizeof(json_buf),
                              "\"cmd\":\"%s\",\"face\":\"%s\",\"result\":\"%s\"",
@@ -332,6 +418,8 @@ extern "C" void app_main(void)
                 esp_mn_commands_add(3, "da kai men");
                 esp_mn_commands_add(4, "guan bi men");
                 esp_mn_commands_add(5, "shi bie ren lian");
+                esp_mn_commands_add(6, "zhu ce sheng wen");
+                esp_mn_commands_add(7, "shi bie sheng yin");
                 esp_mn_commands_update();
                 voice_params.chunksize = voice_params.multinet->get_samp_chunksize(voice_params.mn_data);
             }
@@ -540,28 +628,24 @@ extern "C" void app_main(void)
 
     g_espdl_mutex = xSemaphoreCreateMutex();
 
-    // ---- Hand Gesture Recognition ----
-    static HandGesturePipeline *hand_pipeline = nullptr;
-    static auto *s_frame_cap = frame_cap;
-    hand_pipeline = new HandGesturePipeline();
-    xTaskCreatePinnedToCore([](void *) {
-        auto *last_node = s_frame_cap->get_last_node();
-        while (true) {
-            xEventGroupWaitBits(last_node->get_event_group(),
-                who::frame_cap::WhoFrameCapNode::NEW_FRAME, pdTRUE, pdFALSE, portMAX_DELAY);
-            auto fb = last_node->cam_fb_peek();
-            if (!fb || !hand_pipeline) continue;
-            if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(50))) {
-                dl::image::img_t img = static_cast<dl::image::img_t>(*fb);
-                auto results = hand_pipeline->run(img);
-                xSemaphoreGive(g_espdl_mutex);
-                if (!results.empty()) {
-                    ESP_LOGI("HandGesture", "%s (%.0f%%)", results[0].name.c_str(), results[0].score * 100);
-                }
-            }
-            vTaskDelay(pdMS_TO_TICKS(200));
+    // ---- Speaker Verification Init ----
+    {
+        ESP_LOGI(TAG, "Init speaker verification...");
+        g_speaker_verifier = new SpeakerVerification(6); // 6-second model
+        g_embedding_dim = g_speaker_verifier->get_embedding_dim();
+        g_voice_db = new dl::feat::FeatVerificationDatabase("/sdcard/voice.db", g_embedding_dim);
+        g_enrolled_embedding = (float *)heap_caps_malloc(g_embedding_dim * sizeof(float), MALLOC_CAP_SPIRAM);
+        if (!g_voice_db->is_valid()) {
+            ESP_LOGW(TAG, "Voice DB init failed, creating new one...");
         }
-    }, "hand_gesture", 4096, nullptr, 2, nullptr, 1);
+        // Pre-allocate 6-second audio buffer (16kHz mono int16)
+        g_voice_enroll_buf = (int16_t *)heap_caps_malloc(16000 * 6 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        if (!g_voice_enroll_buf) {
+            ESP_LOGE(TAG, "Failed to allocate voice enrollment buffer");
+        }
+        ESP_LOGI(TAG, "Speaker verification ready (emb=%d dims). Say 'zhu ce sheng wen' to enroll, 'shi bie sheng yin' to verify.",
+                 g_embedding_dim);
+    }
 
     // Heartbeat timer: report online every 60s
     esp_timer_handle_t hb_timer = nullptr;

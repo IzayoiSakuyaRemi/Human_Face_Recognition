@@ -1,6 +1,5 @@
 #pragma once
 
-#include <vector>
 #include "dl_detect_define.hpp"
 #include "dl_feat_base.hpp"
 #include "dl_recognition_database.hpp"
@@ -52,6 +51,5 @@ public:
     esp_err_t delete_feat(uint16_t id);
     esp_err_t delete_last_feat();
     int get_num_feats();
-    std::vector<uint16_t> get_feat_ids();
     HumanFaceFeat *get_feat_model();
 };

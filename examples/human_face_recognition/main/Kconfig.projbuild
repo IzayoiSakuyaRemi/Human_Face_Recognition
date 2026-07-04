@@ -1,3 +1,25 @@
+# ESP-Hosted slave target selection (needed for P4+C5 combo)
+# Must be set before esp_hosted Kconfig is processed to avoid "invalid" fallback.
+choice SLAVE_IDF_TARGET_CHOICE
+    prompt "Slave Target for ESP-Hosted"
+    default SLAVE_IDF_TARGET_ESP32C5_CHOICE
+    help
+        Select the ESP32 chip that acts as the Wi-Fi slave.
+
+    config SLAVE_IDF_TARGET_ESP32C5_CHOICE
+        bool "ESP32-C5"
+        select SLAVE_IDF_TARGET_ESP32C5
+        select SLAVE_IDF_TARGET_ARCH_RISCV
+endchoice
+
+config SLAVE_IDF_TARGET_ESP32C5
+    bool
+    default y
+
+config SLAVE_IDF_TARGET_ARCH_RISCV
+    bool
+    default y
+
 menu "Human Face Recognition App"
 
     config EVENT_SERVER_URL

@@ -210,12 +210,13 @@ void SettingsApp::refresh_face_list()
         return;
     }
 
-    auto ids = fb->get_feat_ids();
+    int num = fb->get_num_feats();
     char buf[64];
-    snprintf(buf, sizeof(buf), "Enrolled: %d faces", (int)ids.size());
+    snprintf(buf, sizeof(buf), "Enrolled: %d faces", num);
     lv_label_set_text(m_face_count_label, buf);
 
-    for (auto id : ids) {
+    // get_feat_ids() removed in newer esp-dl; enumerate numerically
+    for (int id = 0; id < num; id++) {
         lv_obj_t *row = lv_obj_create(m_face_list);
         lv_obj_set_size(row, lv_pct(95), 45);
         lv_obj_set_style_bg_color(row, lv_color_hex(0x2a2a3e), 0);

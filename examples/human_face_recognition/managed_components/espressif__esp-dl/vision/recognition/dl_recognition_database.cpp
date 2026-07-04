@@ -284,14 +284,5 @@ void DataBase::print()
     printf("\n");
 }
 
-std::vector<uint16_t> DataBase::get_feat_ids()
-{
-    std::vector<uint16_t> ids;
-    for (const auto &f : m_feats) {
-        ids.push_back(f.id);
-    }
-    return ids;
-}
-
 } // namespace recognition
 } // namespace dl

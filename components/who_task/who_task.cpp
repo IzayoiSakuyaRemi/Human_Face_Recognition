@@ -18,7 +18,7 @@ bool WhoTaskBase::run(const configSTACK_DEPTH_TYPE uxStackDepth, UBaseType_t uxP
             xSemaphoreGive(m_mutex);
             return true;
         } else {
-            ESP_LOGE(TAG, "Failed to create task.\n");
+            ESP_LOGE(TAG, "Failed to create task '%s' (stack=%" PRIu32 " bytes).\n", m_name.c_str(), (uint32_t)uxStackDepth);
         }
     }
     xSemaphoreGive(m_mutex);

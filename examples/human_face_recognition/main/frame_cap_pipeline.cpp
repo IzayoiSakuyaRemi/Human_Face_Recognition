@@ -51,7 +51,7 @@ WhoFrameCap *get_uvc_frame_cap_pipeline()
 
     frame_cap->add_node<WhoDecodeNode>(
         "FrameCapDecode",
-        dl::image::DL_IMAGE_PIX_TYPE_RGB565,
+        dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
         2,
         false
     );
@@ -60,7 +60,7 @@ WhoFrameCap *get_uvc_frame_cap_pipeline()
         "FrameCapPPAResize",
         800,
         600,
-        dl::image::DL_IMAGE_PIX_TYPE_RGB565,
+        dl::image::DL_IMAGE_PIX_TYPE_RGB565LE,
         MODEL_TIME + 1
     );
 

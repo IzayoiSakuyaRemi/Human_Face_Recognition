@@ -5,7 +5,6 @@
 #include "esp_system.h"
 #include <algorithm>
 #include <list>
-#include <vector>
 
 namespace dl {
 namespace recognition {
@@ -20,7 +19,6 @@ public:
     std::vector<result_t> query_feat(TensorBase *feat, float thr, int top_k);
     void print();
     int get_num_feats() { return m_meta.num_feats_valid; }
-    std::vector<uint16_t> get_feat_ids();
 
 private:
     std::string m_db_path;
