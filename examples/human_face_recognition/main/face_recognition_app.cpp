@@ -9,6 +9,9 @@ static const char *TAG = "FaceApp";
 extern who::app::WhoRecognitionAppLCD *g_recognition_app;
 // Voice pause flag (checked by voice task)
 extern bool g_voice_paused;
+extern bool g_voice_enrolling;
+extern bool g_voice_verifying;
+extern int g_pending_cmd_id;
 
 FaceRecognitionApp::FaceRecognitionApp()
     : ESP_Brookesia_PhoneApp(
@@ -63,6 +66,7 @@ bool FaceRecognitionApp::run()
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
 
     // Create recognition UI (canvas, labels, buttons) on this screen
+    g_voice_paused = false;  // activate voice recognition when Camera App is open
     if (g_recognition_app) {
         g_recognition_app->create_ui(scr);
         g_recognition_app->run();  // restart pipeline tasks (stopped by close())
@@ -102,6 +106,9 @@ bool FaceRecognitionApp::close()
 {
     ESP_LOGI(TAG, "Camera App closed — stopping pipeline");
     g_voice_paused = true;
+    g_voice_enrolling = false;
+    g_voice_verifying = false;
+    g_pending_cmd_id = 0;
     if (g_recognition_app) {
         g_recognition_app->stop();       // free camera DMA buffers + CPU
         g_recognition_app->reset_ui();   // null canvas/label pointers before brookesia deletes the screen
