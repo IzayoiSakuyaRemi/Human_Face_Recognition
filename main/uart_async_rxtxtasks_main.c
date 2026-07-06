@@ -35,12 +35,13 @@
 #include "esp_csi_gain_ctrl.h"
 #include "csi_adr018.h"
 #include "event_reporter.h"
+#include "xiaozhi/uart_frame_protocol.h"
 
 /* ── UART1 (to P4) ────────────────────────── */
 #define TXD_PIN          GPIO_NUM_17
 #define RXD_PIN          GPIO_NUM_18
 #define UART_BAUD        921600
-#define RX_BUF_SIZE      2048
+#define RX_BUF_SIZE      8192  // 4 PCM frames @60ms each = 268ms buffer depth
 
 /* ── WiFi AP provisioning ─────────────────── */
 #define AP_SSID          "S3-Config"
@@ -132,12 +133,148 @@ static void uart_init(void)
     uart_set_pin(UART_NUM_1, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
-static void rx_task(void *arg)
+/* ── Training state forwarded to P4 ─────────── */
+static bool g_training_active = false;
+static uint32_t g_training_start_ms = 0;
+
+static void send_training_status(const char *status, int elapsed_s)
+{
+    char js[128];
+    int n = snprintf(js, sizeof(js),
+        "{\"training\":%s,\"elapsed_s\":%d,\"status\":\"%s\"}",
+        g_training_active ? "true" : "false", elapsed_s, status);
+    ctrl_frame_header_t hdr = {UART_FRAME_CTRL, CTRL_RADAR_STATUS, (uint16_t)n};
+    uart_write_bytes(UART_NUM_1, (const char *)&hdr, 4);
+    uart_write_bytes(UART_NUM_1, js, n);
+}
+
+static void handle_ctrl_train_start(void)
+{
+    esp_radar_train_remove();
+    esp_radar_train_start();
+    g_rcfg.train_start = true;
+    g_training_active = true;
+    g_training_start_ms = esp_log_timestamp();
+    ESP_LOGI(TAG, "Radar training started (P4 command)");
+    send_training_status("Training started", 0);
+}
+
+static void handle_ctrl_train_stop(void)
+{
+    esp_radar_train_stop(&g_rcfg.someone_threshold, &g_rcfg.move_threshold);
+    g_rcfg.train_start = false;
+    g_training_active = false;
+    nvs_save_rcfg();
+    ESP_LOGI(TAG, "Radar training stopped: someone=%.6f move=%.6f",
+             g_rcfg.someone_threshold, g_rcfg.move_threshold);
+    /* Send DONE with thresholds */
+    char js[128];
+    int n = snprintf(js, sizeof(js),
+        "{\"someone_threshold\":%.6f,\"move_threshold\":%.6f}",
+        g_rcfg.someone_threshold, g_rcfg.move_threshold);
+    ctrl_frame_header_t hdr = {UART_FRAME_CTRL, CTRL_RADAR_TRAIN_DONE, (uint16_t)n};
+    uart_write_bytes(UART_NUM_1, (const char *)&hdr, 4);
+    uart_write_bytes(UART_NUM_1, js, n);
+}
+
+static void handle_ctrl_train_clear(void)
+{
+    esp_radar_train_remove();
+    g_rcfg.train_start = false;
+    g_training_active = false;
+    g_rcfg.someone_threshold = 0.0f;
+    g_rcfg.move_threshold = 0.0003f;
+    nvs_save_rcfg();
+    ESP_LOGI(TAG, "Radar training data cleared");
+    send_training_status("Cleared", 0);
+}
+
+/* ── UART frame demux task (replaces rx_task) ── */
+static void uart_frame_demux_task(void *arg)
 {
     uint8_t *d = malloc(RX_BUF_SIZE + 1);
+    static uint8_t bin_buf[2048];
+    static size_t  bin_pos = 0;
+    static bool    in_binary = false;
+    static size_t  bin_expected = 0;
+
+    uint32_t rx_total = 0;
     while (1) {
-        int r = uart_read_bytes(UART_NUM_1, d, RX_BUF_SIZE, pdMS_TO_TICKS(500));
-        if (r > 0) { d[r] = 0; (void)d; }
+        int r = uart_read_bytes(UART_NUM_1, d, RX_BUF_SIZE, pdMS_TO_TICKS(100));
+        if (r <= 0) continue;
+        rx_total += r;
+        /* Diagnostic: log every 5s */
+        static uint32_t last_log = 0;
+        if (esp_log_timestamp() - last_log > 5000) {
+            ESP_LOGI(TAG, "UART1 RX: %d bytes this cycle, %lu total since boot, in_bin=%d pos=%d exp=%d",
+                     r, rx_total, in_binary, (int)bin_pos, (int)bin_expected);
+            last_log = esp_log_timestamp();
+        }
+        /* Log first byte of every chunk */
+        if (r > 0) {
+            ESP_LOGD(TAG, "UART chunk: %d bytes, first=0x%02X", r, d[0]);
+        }
+
+        for (int i = 0; i < r; i++) {
+            uint8_t byte = d[i];
+
+            /* Detect binary frame start */
+            if (!in_binary && (byte == UART_FRAME_CTRL ||
+                               byte == UART_FRAME_PCM_UP ||
+                               byte == UART_FRAME_ADR018)) {
+                bin_buf[0] = byte;
+                bin_pos = 1;  /* position 0 filled, next byte goes to 1 */
+                in_binary = true;
+                bin_expected = 2048;
+                continue;
+            }
+
+            if (in_binary) {
+                bin_buf[bin_pos++] = byte;
+                ESP_LOGI(TAG, "Bin[%d]=0x%02X exp=%d",
+                         (int)(bin_pos - 1), byte, (int)bin_expected);
+                /* Determine expected length from header */
+                if (bin_pos >= 4 && bin_buf[0] == UART_FRAME_CTRL) {
+                    uint16_t pl = (uint16_t)bin_buf[2] | ((uint16_t)bin_buf[3] << 8);
+                    bin_expected = 4 + pl;
+                } else if (bin_pos >= 6 && bin_buf[0] == UART_FRAME_PCM_UP) {
+                    uint16_t sc = (uint16_t)bin_buf[4] | ((uint16_t)bin_buf[5] << 8);
+                    bin_expected = 6 + (size_t)sc * 2 + 2;
+                }
+
+                if (bin_pos >= bin_expected) {
+                    /* Dispatch */
+                    uint8_t type = bin_buf[0];
+                    ESP_LOGI(TAG, "Binary frame rx: type=0x%02X len=%d", type, (int)bin_pos);
+                    if (type == UART_FRAME_CTRL) {
+                        ctrl_frame_header_t *ctrl = (ctrl_frame_header_t *)bin_buf;
+                        switch (ctrl->cmd) {
+                        case CTRL_RADAR_TRAIN_START:
+                            handle_ctrl_train_start(); break;
+                        case CTRL_RADAR_TRAIN_STOP:
+                            handle_ctrl_train_stop(); break;
+                        case CTRL_RADAR_TRAIN_CLEAR:
+                            handle_ctrl_train_clear(); break;
+                        case CTRL_ENTER_XIAOZHI:
+                        case CTRL_EXIT_XIAOZHI:
+                            ESP_LOGI(TAG, "Xiaozhi mode cmd %d (not yet implemented)", ctrl->cmd);
+                            break;
+                        default:
+                            ESP_LOGI(TAG, "Unknown ctrl cmd %d", ctrl->cmd);
+                        }
+                    } else if (type == UART_FRAME_ADR018) {
+                        /* Existing ADR-018 handling (future: route based on mode) */
+                    }
+                    /* PCM_UP not yet implemented — will be used by xiaozhi stage */
+                    in_binary = false;
+                    bin_pos = 0;
+                }
+                continue;
+            }
+
+            /* Not in binary — byte goes to existing process_serial_rx_pkt */
+            /* (unchanged — the existing serial/console handler still works) */
+        }
     }
 }
 
@@ -292,7 +429,16 @@ static void wifi_radar_cb(void *ctx, const wifi_radar_info_t *info)
     if (!s_count)
         ESP_LOGI(TAG, "================ RADAR RECV ================");
 
-    if (g_rcfg.train_start) { slm = sls = esp_log_timestamp(); printf("=== TRAINING in progress ===\n"); return; }
+    if (g_rcfg.train_start) {
+        slm = sls = esp_log_timestamp();
+        /* Send training status via UART every 2s (not just silent return) */
+        if (esp_log_timestamp() - slp >= 2000 && g_training_active) {
+            slp = esp_log_timestamp();
+            int elapsed = (esp_log_timestamp() - g_training_start_ms) / 1000;
+            send_training_status("Collecting baseline data...", elapsed);
+        }
+        return;
+    }
 
     /* State-change edge detection */
     static bool last_room = false, last_human = false;
@@ -921,7 +1067,7 @@ void app_main(void)
     /* UART1 bridge to P4 */
     uart_init();
     ESP_LOGI(TAG, "UART1 ready: TX=%d RX=%d baud=%d", TXD_PIN, RXD_PIN, UART_BAUD);
-    xTaskCreate(rx_task, "rx", 4096, NULL, 5, NULL);
+    xTaskCreate(uart_frame_demux_task, "uart_demux", 6144, NULL, 5, NULL);
 
     esp_log_level_set("esp_radar", ESP_LOG_INFO);
     esp_log_level_set("csi_detection_task", ESP_LOG_ERROR); /* suppress high-rate warnings */
