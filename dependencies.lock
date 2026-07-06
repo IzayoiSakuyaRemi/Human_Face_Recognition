@@ -39,6 +39,23 @@ dependencies:
     - esp32c6
     - esp32c61
     version: 0.3.4
+  espressif/esp_audio_codec:
+    component_hash: af4663830bc73eca58febcc34a976d003465e78ed57458aa00a14b231e392ca1
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.4.1
+  espressif/esp_audio_effects:
+    component_hash: 8fa2bf7356a3c7fb9a9c7d2185aba474fa033b0506886c70752f67c42cd81b3f
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.2.1
   espressif/esp_csi_gain_ctrl:
     component_hash: 2700b6625343916dfb721af42131857b3e387dbbb9cc1df569128525c8b05f8e
     dependencies:
@@ -89,7 +106,9 @@ dependencies:
     version: 5.5.4
 direct_dependencies:
 - espressif/esp-radar
+- espressif/esp_audio_codec
+- espressif/esp_audio_effects
 - idf
-manifest_hash: 53b54900cfa453ea47e786439bd5b58d438af686b6b98a2fe5fc626ff29d4ca3
+manifest_hash: 0aad2215df88ece8de9688c58a21aa413f2c8842b3068c1ba18f0f06dbbc17d7
 target: esp32s3
 version: 2.0.0

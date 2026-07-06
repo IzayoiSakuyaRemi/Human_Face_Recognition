@@ -36,6 +36,7 @@
 #include "csi_adr018.h"
 #include "event_reporter.h"
 #include "xiaozhi/uart_frame_protocol.h"
+#include "xiaozhi/xiaozhi_relay.h"
 
 /* ── UART1 (to P4) ────────────────────────── */
 #define TXD_PIN          GPIO_NUM_17
@@ -56,7 +57,6 @@ static const char *TAG = "s3";
 
 /* ── Forward declarations ─────────────────── */
 static void uart_init(void);
-static void rx_task(void *arg);
 static void trigger_router_send_data_task(void *arg);
 static void csi_data_print_task(void *arg);
 static void cmd_register_radar(void);
@@ -257,10 +257,18 @@ static void uart_frame_demux_task(void *arg)
                             handle_ctrl_train_clear(); break;
                         case CTRL_ENTER_XIAOZHI:
                         case CTRL_EXIT_XIAOZHI:
-                            ESP_LOGI(TAG, "Xiaozhi mode cmd %d (not yet implemented)", ctrl->cmd);
+                            xiaozhi_relay_on_ctrl_from_p4(ctrl->cmd,
+                                bin_buf + CTRL_FRAME_HEADER_SIZE,
+                                ctrl->payload_len);
                             break;
                         default:
                             ESP_LOGI(TAG, "Unknown ctrl cmd %d", ctrl->cmd);
+                        }
+                    } else if (type == UART_FRAME_PCM_UP) {
+                        /* P4→S3: raw PCM from microphone → relay to xiaozhi */
+                        if (xiaozhi_relay_is_active()) {
+                            xiaozhi_relay_on_opus_from_p4(&bin_buf[PCM_FRAME_HEADER_SIZE],
+                                (uint16_t)(bin_pos - PCM_FRAME_HEADER_SIZE - PCM_FRAME_CRC_SIZE));
                         }
                     } else if (type == UART_FRAME_ADR018) {
                         /* Existing ADR-018 handling (future: route based on mode) */
