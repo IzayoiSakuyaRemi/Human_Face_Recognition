@@ -19,6 +19,7 @@ private:
     void create_wifi_page();
     void create_about_page();
     void create_wallpaper_page();
+    void create_radar_page();   // ★ Radar training page
 
     void refresh_face_list();
     void apply_wallpaper(const std::string &path);
@@ -54,6 +55,17 @@ private:
     lv_obj_t *m_wallpaper_list = nullptr;
     lv_obj_t *m_wallpaper_status = nullptr;
     std::vector<std::string> m_wallpaper_files;
+
+    // ★ Radar training page
+    lv_obj_t *m_radar_page = nullptr;
+    lv_obj_t *m_radar_status_label = nullptr;
+    lv_obj_t *m_radar_threshold_label = nullptr;
+    lv_obj_t *m_radar_spinner = nullptr;
+    lv_obj_t *m_radar_elapsed_label = nullptr;
+    lv_timer_t *m_radar_timer = nullptr;
+    lv_obj_t *m_radar_btn_start = nullptr;
+    lv_obj_t *m_radar_btn_stop = nullptr;
+    bool m_radar_training_active = false;
 
     // Static for cross-task WiFi status (written by prov task, read by LVGL timer)
     static char s_wifi_status_buf[256];

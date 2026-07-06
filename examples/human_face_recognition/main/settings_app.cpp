@@ -1,5 +1,14 @@
 #include "settings_app.hpp"
-#include "wifi_provisioning.hpp"
+#include "uart_bridge.hpp"
+#include "xiaozhi/uart_frame_protocol.h"
+// #include "wifi_provisioning.hpp"  // C5 removed
+
+// ── Stub WiFi globals (was in wifi_provisioning.cpp, C5 removed) ──
+static char g_wifi_ip[32] = {0};
+static char g_wifi_ssid[33] = {0};
+static bool wifi_is_connected() { return false; }
+static void wifi_provisioning_start_async(void (*)(const char*, bool)) {}
+
 // wallpaper loaded from SD card — no compiled-in default
 #include "who_recognition_app_lcd.hpp"
 #include "who_recognition.hpp"
@@ -13,6 +22,7 @@
 #include <nvs.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 
 static const char *TAG = "SettingsApp";
@@ -158,6 +168,11 @@ void SettingsApp::create_main_page()
     auto *btn4 = menu_row_create(m_main_page, "About Device", 305);
     lv_obj_add_event_cb(btn4, [](lv_event_t *e) {
         ((SettingsApp *)lv_event_get_user_data(e))->create_about_page();
+    }, LV_EVENT_CLICKED, this);
+
+    auto *btn5 = menu_row_create(m_main_page, "Radar Training", 380);
+    lv_obj_add_event_cb(btn5, [](lv_event_t *e) {
+        ((SettingsApp *)lv_event_get_user_data(e))->create_radar_page();
     }, LV_EVENT_CLICKED, this);
 }
 
@@ -460,13 +475,9 @@ void SettingsApp::create_wifi_page()
         lv_obj_t *btn = lv_event_get_target_obj(e);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
 
-        // Reset status
-        s_wifi_status_buf[0] = '\0';
-        s_wifi_status_dirty = false;
-        s_wifi_status_done = false;
-
-        // Start WiFi provisioning in background
-        wifi_provisioning_start_async(wifi_status_cb);
+        // WiFi disabled — C5 removed
+        lv_label_set_text(self->m_wifi_status_label, "WiFi: Unavailable (C5 removed)");
+        lv_obj_add_flag(self->m_wifi_spinner, LV_OBJ_FLAG_HIDDEN);
     }, LV_EVENT_CLICKED, this);
 
     // Note text
@@ -881,6 +892,196 @@ void SettingsApp::create_wallpaper_page()
     lv_label_set_text(bbtxt, "Back");
     lv_obj_center(bbtxt);
     lv_obj_add_event_cb(btn_back, [](lv_event_t *e) {
+        auto *self = (SettingsApp *)lv_event_get_user_data(e);
+        self->back();
+    }, LV_EVENT_CLICKED, this);
+}
+
+// ============================================================
+// Radar Training Page
+// ============================================================
+char g_radar_training_status[256] = "Ready";
+float g_radar_someone_threshold = -1.0f;
+float g_radar_move_threshold = -1.0f;
+int g_radar_training_elapsed = 0;
+bool g_radar_training_active = false;
+
+/* ── Frame callback: handles radar training status from S3 ── */
+static void radar_frame_callback(uint8_t type, const uint8_t *data, size_t len)
+{
+    if (type != UART_FRAME_CTRL || len < 4) return;
+    ctrl_frame_header_t *ctrl = (ctrl_frame_header_t *)data;
+
+    if (ctrl->cmd == CTRL_RADAR_STATUS && ctrl->payload_len > 0) {
+        const char *json = (const char *)&data[4];
+        /* Parse {"training":true/false,"elapsed_s":N,"status":"..."} */
+        const char *p = strstr(json, "\"elapsed_s\":");
+        if (p) g_radar_training_elapsed = atoi(p + 12);
+        p = strstr(json, "\"status\":\"");
+        if (p) {
+            p += 10;
+            const char *e = strchr(p, '"');
+            if (e && (e - p) < (int)sizeof(g_radar_training_status) - 1) {
+                memcpy(g_radar_training_status, p, e - p);
+                g_radar_training_status[e - p] = 0;
+            }
+        }
+        p = strstr(json, "\"training\":true");
+        if (p) g_radar_training_active = true;
+        p = strstr(json, "\"training\":false");
+        if (p) g_radar_training_active = false;
+    }
+    else if (ctrl->cmd == CTRL_RADAR_TRAIN_DONE && ctrl->payload_len > 0) {
+        const char *json = (const char *)&data[4];
+        /* Parse {"someone_threshold":X,"move_threshold":Y} */
+        g_radar_training_active = false;
+        const char *p = strstr(json, "\"someone_threshold\":");
+        if (p) g_radar_someone_threshold = (float)atof(p + 20);
+        p = strstr(json, "\"move_threshold\":");
+        if (p) g_radar_move_threshold = (float)atof(p + 17);
+        snprintf(g_radar_training_status, sizeof(g_radar_training_status), "Done!");
+    }
+}
+
+void SettingsApp::create_radar_page()
+{
+    if (m_radar_page) { show_page(m_radar_page); return; }
+    static bool frame_cb_registered = false;
+    if (!frame_cb_registered) {
+        uart_bridge_on_frame(radar_frame_callback);
+        frame_cb_registered = true;
+    }
+    m_radar_page = create_page_container();
+    show_page(m_radar_page);
+
+    lv_obj_t *title = lv_label_create(m_radar_page);
+    lv_label_set_text(title, "Radar Training");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(title, &montserrat_bold_26, LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+
+    m_radar_status_label = lv_label_create(m_radar_page);
+    lv_label_set_text(m_radar_status_label, "Status: Ready");
+    lv_obj_set_style_text_color(m_radar_status_label, lv_color_hex(0xAAAAFF), LV_PART_MAIN);
+    lv_obj_set_style_text_font(m_radar_status_label, &montserrat_bold_20, LV_PART_MAIN);
+    lv_obj_align(m_radar_status_label, LV_ALIGN_TOP_LEFT, 20, 80);
+
+    m_radar_elapsed_label = lv_label_create(m_radar_page);
+    lv_label_set_text(m_radar_elapsed_label, "");
+    lv_obj_set_style_text_color(m_radar_elapsed_label, lv_color_hex(0x88CC88), LV_PART_MAIN);
+    lv_obj_set_style_text_font(m_radar_elapsed_label, &montserrat_bold_20, LV_PART_MAIN);
+    lv_obj_align(m_radar_elapsed_label, LV_ALIGN_TOP_LEFT, 20, 110);
+
+    m_radar_threshold_label = lv_label_create(m_radar_page);
+    lv_label_set_text(m_radar_threshold_label, "Thresholds: N/A");
+    lv_obj_set_style_text_color(m_radar_threshold_label, lv_color_hex(0xCCAA88), LV_PART_MAIN);
+    lv_obj_set_style_text_font(m_radar_threshold_label, &montserrat_bold_20, LV_PART_MAIN);
+    lv_obj_align(m_radar_threshold_label, LV_ALIGN_TOP_LEFT, 20, 140);
+
+    m_radar_spinner = lv_label_create(m_radar_page);
+    lv_label_set_text(m_radar_spinner, "Training...");
+    lv_obj_set_style_text_color(m_radar_spinner, lv_color_hex(0xFFCC00), LV_PART_MAIN);
+    lv_obj_set_style_text_font(m_radar_spinner, &montserrat_bold_20, LV_PART_MAIN);
+    lv_obj_align(m_radar_spinner, LV_ALIGN_TOP_MID, 0, 190);
+    lv_obj_add_flag(m_radar_spinner, LV_OBJ_FLAG_HIDDEN);
+
+    /* ── Start Training ── */
+    m_radar_btn_start = lv_button_create(m_radar_page);
+    lv_obj_set_size(m_radar_btn_start, 220, 50);
+    lv_obj_align(m_radar_btn_start, LV_ALIGN_TOP_MID, 0, 240);
+    lv_obj_set_style_bg_color(m_radar_btn_start, lv_color_hex(0x0f3460), 0);
+    lv_obj_set_style_radius(m_radar_btn_start, 8, 0);
+    lv_obj_t *stxt = lv_label_create(m_radar_btn_start);
+    lv_label_set_text(stxt, "Start Training");
+    lv_obj_center(stxt);
+    lv_obj_add_event_cb(m_radar_btn_start, [](lv_event_t *e) {
+        auto *self = (SettingsApp *)lv_event_get_user_data(e);
+        uint8_t f[4] = {UART_FRAME_CTRL, CTRL_RADAR_TRAIN_START, 0, 0};
+        uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
+        g_radar_training_active = true;
+        g_radar_training_elapsed = 0;
+        snprintf(g_radar_training_status, sizeof(g_radar_training_status), "Training...");
+        self->m_radar_training_active = true;
+        lv_obj_clear_flag(self->m_radar_spinner, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(self->m_radar_status_label, "Status: Training...");
+        lv_label_set_text(self->m_radar_elapsed_label, "Elapsed: 0s");
+    }, LV_EVENT_CLICKED, this);
+
+    /* ── Stop Training ── */
+    m_radar_btn_stop = lv_button_create(m_radar_page);
+    lv_obj_set_size(m_radar_btn_stop, 220, 50);
+    lv_obj_align(m_radar_btn_stop, LV_ALIGN_TOP_MID, 0, 310);
+    lv_obj_set_style_bg_color(m_radar_btn_stop, lv_color_hex(0x664400), 0);
+    lv_obj_set_style_radius(m_radar_btn_stop, 8, 0);
+    lv_obj_t *stptxt = lv_label_create(m_radar_btn_stop);
+    lv_label_set_text(stptxt, "Stop Training");
+    lv_obj_center(stptxt);
+    lv_obj_add_event_cb(m_radar_btn_stop, [](lv_event_t *e) {
+        auto *self = (SettingsApp *)lv_event_get_user_data(e);
+        uint8_t f[4] = {UART_FRAME_CTRL, CTRL_RADAR_TRAIN_STOP, 0, 0};
+        uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
+        g_radar_training_active = false;
+        self->m_radar_training_active = false;
+        lv_obj_add_flag(self->m_radar_spinner, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(self->m_radar_status_label, "Status: Waiting for results...");
+    }, LV_EVENT_CLICKED, this);
+
+    /* ── Clear Calibration ── */
+    lv_obj_t *btn_clear = lv_button_create(m_radar_page);
+    lv_obj_set_size(btn_clear, 220, 50);
+    lv_obj_align(btn_clear, LV_ALIGN_TOP_MID, 0, 380);
+    lv_obj_set_style_bg_color(btn_clear, lv_color_hex(0x662222), 0);
+    lv_obj_set_style_radius(btn_clear, 8, 0);
+    lv_obj_t *ctxt = lv_label_create(btn_clear);
+    lv_label_set_text(ctxt, "Clear Calibration");
+    lv_obj_center(ctxt);
+    lv_obj_add_event_cb(btn_clear, [](lv_event_t *e) {
+        auto *self = (SettingsApp *)lv_event_get_user_data(e);
+        uint8_t f[4] = {UART_FRAME_CTRL, CTRL_RADAR_TRAIN_CLEAR, 0, 0};
+        uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
+        g_radar_training_active = false;
+        self->m_radar_training_active = false;
+        lv_obj_add_flag(self->m_radar_spinner, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(self->m_radar_status_label, "Status: Cleared");
+        lv_label_set_text(self->m_radar_threshold_label, "Thresholds: N/A");
+    }, LV_EVENT_CLICKED, this);
+
+    /* ── Poll timer ── */
+    m_radar_timer = lv_timer_create([](lv_timer_t *t) {
+        auto *self = (SettingsApp *)t->user_data;
+        static char lstatus[256] = {};
+        static float ls = -1, lm = -1;
+        static int le = -1;
+        static bool la = false;
+
+        if (g_radar_training_active != la) {
+            la = g_radar_training_active;
+            if (!la) lv_obj_add_flag(self->m_radar_spinner, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (g_radar_training_elapsed != le) {
+            le = g_radar_training_elapsed;
+            char b[48]; snprintf(b, sizeof(b), "Elapsed: %ds", le);
+            lv_label_set_text(self->m_radar_elapsed_label, b);
+        }
+        if (strcmp(g_radar_training_status, lstatus) != 0) {
+            snprintf(lstatus, sizeof(lstatus), "%s", g_radar_training_status);
+            char b[280]; snprintf(b, sizeof(b), "Status: %s", lstatus);
+            lv_label_set_text(self->m_radar_status_label, b);
+        }
+        if (g_radar_someone_threshold != ls || g_radar_move_threshold != lm) {
+            ls = g_radar_someone_threshold; lm = g_radar_move_threshold;
+            char b[64]; snprintf(b, sizeof(b), "someone=%.4f  move=%.4f", ls, lm);
+            lv_label_set_text(self->m_radar_threshold_label, b);
+        }
+    }, 500, this);
+
+    lv_obj_t *rbtn_back = lv_button_create(m_radar_page);
+    lv_obj_set_size(rbtn_back, 80, 36);
+    lv_obj_align(rbtn_back, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+    lv_obj_t *rbbtxt = lv_label_create(rbtn_back);
+    lv_label_set_text(rbbtxt, "Back");
+    lv_obj_center(rbbtxt);
+    lv_obj_add_event_cb(rbtn_back, [](lv_event_t *e) {
         auto *self = (SettingsApp *)lv_event_get_user_data(e);
         self->back();
     }, LV_EVENT_CLICKED, this);

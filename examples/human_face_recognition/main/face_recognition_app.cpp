@@ -2,8 +2,11 @@
 #include "who_recognition_app_lcd.hpp"
 #include "esp_brookesia.hpp"
 #include "esp_log.h"
+#include "uart_bridge.hpp"
+#include "xiaozhi/uart_frame_protocol.h"
 
 static const char *TAG = "FaceApp";
+static bool s_xiaozhi_mode = false;
 
 // Access global recognition app (for pause/resume)
 extern who::app::WhoRecognitionAppLCD *g_recognition_app;
@@ -73,8 +76,49 @@ bool FaceRecognitionApp::run()
         m_ui_created = true;
     }
 
-    // Create Exit button — now owned by FaceRecognitionApp
+    // Create Exit button
     create_exit_button(scr);
+
+    // ── Xiaozhi mode toggle button ──
+    {
+        lv_obj_t *btn = lv_button_create(scr);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x0f3460), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_80, LV_PART_MAIN);
+        lv_obj_set_style_border_width(btn, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0x6688cc), LV_PART_MAIN);
+        lv_obj_set_style_radius(btn, 6, LV_PART_MAIN);
+        lv_obj_set_size(btn, 80, 40);
+
+        lv_obj_t *label = lv_label_create(btn);
+        lv_label_set_text(label, "XiaoZhi");
+        lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(0xCCDDFF), LV_PART_MAIN);
+        lv_obj_center(label);
+        lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -10, 360);
+
+        lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+            s_xiaozhi_mode = !s_xiaozhi_mode;
+            lv_obj_t *btn_target = lv_event_get_target_obj(e);
+
+            if (s_xiaozhi_mode) {
+                if (g_recognition_app) g_recognition_app->pause();
+                g_voice_paused = true;
+                uint8_t f[4] = {UART_FRAME_CTRL, CTRL_ENTER_XIAOZHI, 0, 0};
+                uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
+                ESP_LOGI(TAG, "Switched to XIAOZHI mode");
+                lv_label_set_text(lv_obj_get_child(btn_target, 0), "Guard");
+                lv_obj_set_style_bg_color(btn_target, lv_color_hex(0x0f6040), LV_PART_MAIN);
+            } else {
+                uint8_t f[4] = {UART_FRAME_CTRL, CTRL_EXIT_XIAOZHI, 0, 0};
+                uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
+                if (g_recognition_app) g_recognition_app->resume();
+                g_voice_paused = false;
+                ESP_LOGI(TAG, "Switched to GUARD mode");
+                lv_label_set_text(lv_obj_get_child(btn_target, 0), "XiaoZhi");
+                lv_obj_set_style_bg_color(btn_target, lv_color_hex(0x0f3460), LV_PART_MAIN);
+            }
+        }, LV_EVENT_CLICKED, this);
+    }
 
     return true;
 }
