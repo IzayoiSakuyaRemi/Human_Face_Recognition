@@ -20,6 +20,7 @@
 #include "esp_random.h"
 #include "esp_mac.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "mqtt_client.h"
 #include "cJSON.h"
 #include "driver/uart.h"
@@ -60,12 +61,14 @@ static bool xz_ota_fetch_config(void)
         .url = XZ_OTA_URL,
         .method = HTTP_METHOD_GET,
         .timeout_ms = 10000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t http = esp_http_client_init(&http_cfg);
 
     char ua[128]; snprintf(ua, sizeof(ua), "xiaozhi-esp32/2.2.4 (ESP32-S3)");
     esp_http_client_set_header(http, "User-Agent", ua);
-    esp_http_client_set_header(http, "Device-Id", "a4cb8fda47cc"); // TODO: real MAC
+    esp_http_client_set_header(http, "Device-Id", "a4cb8fda47cc");
 
     esp_err_t err = esp_http_client_perform(http);
     if (err != ESP_OK) {
@@ -75,53 +78,60 @@ static bool xz_ota_fetch_config(void)
     }
 
     int status = esp_http_client_get_status_code(http);
-    ESP_LOGI(TAG, "OTA response: %d", status);
-
-    /* Parse JSON response for MQTT config */
-    char *body = NULL;
     int body_len = esp_http_client_get_content_length(http);
-    if (body_len > 0 && body_len < 8192) {
-        body = malloc(body_len + 1);
-        if (body) {
-            int read = esp_http_client_read(http, body, body_len);
-            if (read > 0) {
-                body[read] = 0;
-                ESP_LOGI(TAG, "OTA body: %s", body);
+    ESP_LOGI(TAG, "OTA response: status=%d content_length=%d", status, body_len);
 
-                cJSON *root = cJSON_Parse(body);
-                if (root) {
-                    cJSON *mqtt = cJSON_GetObjectItem(root, "mqtt");
-                    if (mqtt) {
-                        cJSON *endpoint = cJSON_GetObjectItem(mqtt, "endpoint");
-                        cJSON *pub_t    = cJSON_GetObjectItem(mqtt, "publish_topic");
-                        cJSON *sub_t    = cJSON_GetObjectItem(mqtt, "subscribe_topic");
-                        cJSON *cid      = cJSON_GetObjectItem(mqtt, "client_id");
-
-                        if (endpoint && cid && pub_t && sub_t) {
-                            /* Store MQTT URI for later connection */
-                            /* We'll parse the URI in xz_mqtt_connect */
-                            extern char g_mqtt_broker_uri[256];
-                            snprintf(g_mqtt_broker_uri, 256, "%s", endpoint->valuestring);
-                            snprintf(g_client_id, sizeof(g_client_id), "%s", cid->valuestring);
-                            snprintf(g_pub_topic, sizeof(g_pub_topic), "%s", pub_t->valuestring);
-                            snprintf(g_sub_topic, sizeof(g_sub_topic), "%s", sub_t->valuestring);
-                            ESP_LOGI(TAG, "MQTT config: broker=%s client=%s",
-                                     g_mqtt_broker_uri, g_client_id);
-                            cJSON_Delete(root);
-                            free(body);
-                            esp_http_client_cleanup(http);
-                            return true;
-                        }
+    /* Read body */
+    char *body = calloc(1, 4096);
+    if (body) {
+        int r = esp_http_client_read(http, body, 4095);
+        ESP_LOGI(TAG, "OTA read: r=%d", r);
+        if (r > 0) {
+            body[r] = 0;
+            ESP_LOGI(TAG, "OTA body: %s", body);
+            cJSON *root = cJSON_Parse(body);
+            if (root) {
+                cJSON *mqtt = cJSON_GetObjectItem(root, "mqtt");
+                if (mqtt) {
+                    cJSON *ep  = cJSON_GetObjectItem(mqtt, "endpoint");
+                    cJSON *pub = cJSON_GetObjectItem(mqtt, "publish_topic");
+                    cJSON *sub = cJSON_GetObjectItem(mqtt, "subscribe_topic");
+                    cJSON *cid = cJSON_GetObjectItem(mqtt, "client_id");
+                    if (ep && cid && pub && sub) {
+                        extern char g_mqtt_broker_uri[256];
+                        snprintf(g_mqtt_broker_uri, 256, "%s", ep->valuestring);
+                        snprintf(g_client_id, sizeof(g_client_id), "%s", cid->valuestring);
+                        snprintf(g_pub_topic, sizeof(g_pub_topic), "%s", pub->valuestring);
+                        snprintf(g_sub_topic, sizeof(g_sub_topic), "%s", sub->valuestring);
+                        ESP_LOGI(TAG, "MQTT: broker=%s client=%s", g_mqtt_broker_uri, g_client_id);
+                        cJSON_Delete(root); free(body);
+                        esp_http_client_cleanup(http);
+                        return true;
                     }
-                    cJSON_Delete(root);
                 }
+                ESP_LOGW(TAG, "No mqtt section in OTA response");
+                /* Check for websocket config */
+                cJSON *ws = cJSON_GetObjectItem(root, "websocket");
+                if (ws) {
+                    ESP_LOGI(TAG, "Found websocket config instead");
+                }
+                /* Check for activation */
+                cJSON *act = cJSON_GetObjectItem(root, "activation");
+                if (act) {
+                    cJSON *msg = cJSON_GetObjectItem(act, "message");
+                    ESP_LOGI(TAG, "Activation: %s", msg ? msg->valuestring : "required");
+                }
+                cJSON_Delete(root);
+            } else {
+                ESP_LOGW(TAG, "JSON parse failed");
             }
-            free(body);
+        } else {
+            ESP_LOGW(TAG, "Empty OTA body (read=%d)", r);
         }
+        free(body);
     }
-
     esp_http_client_cleanup(http);
-    ESP_LOGW(TAG, "OTA config parse failed, using default");
+    ESP_LOGW(TAG, "OTA config parse failed");
     return false;
 }
 

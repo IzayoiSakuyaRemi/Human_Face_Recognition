@@ -35,15 +35,21 @@ protected:
     std::function<void(const std::string&)> on_err_;
 };
 
-/* ── Tcp ───────────────────────────────────── */
+/* ── Tcp (matches esp-ml307 tcp.h exactly) ── */
 class Tcp {
 public:
     virtual ~Tcp() = default;
     virtual bool Connect(const std::string& host, int port) = 0;
     virtual void Disconnect() = 0;
-    virtual bool Send(const std::string& data) = 0;
-    virtual void OnData(std::function<void(const std::vector<uint8_t>&)> cb) = 0;
-    virtual bool IsConnected() const = 0;
+    virtual int Send(const std::string& data) = 0;
+    virtual void OnStream(std::function<void(const std::string& data)> cb) { stream_cb_ = cb; }
+    virtual void OnDisconnected(std::function<void()> cb) { disc_cb_ = cb; }
+    bool connected() const { return connected_; }
+    virtual int GetLastError() = 0;
+protected:
+    std::function<void(const std::string&)> stream_cb_;
+    std::function<void()> disc_cb_;
+    bool connected_ = false;
 };
 
 /* ── Udp (matches esp-ml307 udp.h) ─────────── */
@@ -108,5 +114,6 @@ public:
     virtual std::unique_ptr<WebSocket> CreateWebSocket(int id) = 0;
     virtual std::unique_ptr<Udp> CreateUdp(int id) = 0;
     virtual std::unique_ptr<Tcp> CreateTcp(int id) = 0;
+    virtual std::unique_ptr<Tcp> CreateSsl(int id) = 0;  /* HTTPS = TLS socket */
     virtual std::unique_ptr<Http> CreateHttp(int id) = 0;
 };
