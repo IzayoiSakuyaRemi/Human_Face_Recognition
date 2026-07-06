@@ -337,7 +337,8 @@ void xiaozhi_relay_on_ctrl_from_p4(uint8_t cmd, const uint8_t *data, uint16_t le
 
     switch (cmd) {
     case CTRL_ENTER_XIAOZHI:
-        /* Stop radar, start relay */
+        /* Suppress CSI warnings during xiaozhi mode */
+        esp_log_level_set("esp_radar_csi_rx_cb", ESP_LOG_ERROR);
         esp_radar_stop();
         xiaozhi_relay_start();
         {
@@ -348,6 +349,7 @@ void xiaozhi_relay_on_ctrl_from_p4(uint8_t cmd, const uint8_t *data, uint16_t le
 
     case CTRL_EXIT_XIAOZHI:
         xiaozhi_relay_stop();
+        esp_log_level_set("esp_radar_csi_rx_cb", ESP_LOG_WARN);
         esp_radar_start();
         {
             uint8_t ack[4] = {UART_FRAME_CTRL, CTRL_GUARD_READY, 0, 0};
