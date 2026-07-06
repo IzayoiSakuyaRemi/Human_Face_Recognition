@@ -30,8 +30,11 @@
 #include "mbedtls/base64.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 #include "esp_radar.h"
 #include "esp_csi_gain_ctrl.h"
+#include "csi_adr018.h"
+#include "event_reporter.h"
 
 /* ── UART1 (to P4) ────────────────────────── */
 #define TXD_PIN          GPIO_NUM_17
@@ -60,7 +63,7 @@ static void cmd_register_radar(void);
 /* ── Global state ─────────────────────────── */
 static QueueHandle_t g_csi_queue       = NULL;
 static bool g_wifi_connected           = false;
-static uint32_t g_send_data_interval   = 1000 / SEND_DATA_FREQ; /* 10ms */
+static uint32_t g_send_data_interval   = 20; /* 50 Hz, prevents esp_radar overflow with MGMT+DATA */
 static esp_ping_handle_t g_ping_handle = NULL;
 
 /* radar config (matches reference) */
@@ -176,6 +179,22 @@ static void wifi_csi_raw_cb(void *ctx, const wifi_csi_filtered_info_t *info)
         }
     }
 
+    /* ADR-018 binary frame → UART1 (50 Hz rate-limited, matching RuView) */
+    {
+        static int64_t s_last_uart_us = 0;
+        int64_t now_us = esp_timer_get_time();
+        if ((now_us - s_last_uart_us) >= 20 * 1000) {  /* 50 Hz, matches esp_radar rate */
+            s_last_uart_us = now_us;
+            uint8_t fbuf[8200];
+            size_t flen = csi_serialize_adr018(
+                (const wifi_csi_info_t *)info->info, /* raw info from esp_radar */
+                0, fbuf, sizeof(fbuf));
+            if (flen > 0) {
+                uart_write_bytes(UART_NUM_1, fbuf, flen);
+            }
+        }
+    }
+
     wifi_csi_filtered_info_t *q = malloc(sizeof(wifi_csi_filtered_info_t) + info->valid_len);
     if (!q) return;
     *q = *info;
@@ -275,14 +294,28 @@ static void wifi_radar_cb(void *ctx, const wifi_radar_info_t *info)
 
     if (g_rcfg.train_start) { slm = sls = esp_log_timestamp(); printf("=== TRAINING in progress ===\n"); return; }
 
-    /* Print 1-line summary every 2 seconds */
+    /* State-change edge detection */
+    static bool last_room = false, last_human = false;
+    bool changed = (room != last_room || human != last_human);
+    last_room = room; last_human = human;
+
+    /* UART1 + HTTP: send radar status every 2 seconds */
     if (esp_log_timestamp() - slp >= 2000) {
         slp = esp_log_timestamp();
         const char *rs = room ? "OCCUPIED" : "EMPTY";
         const char *ms = human ? "MOVING" : "still";
+        /* Console summary */
         printf("RADAR #%d  %s/%s  wander=%.4f jitter=%.4f\n", s_count++, rs, ms, info->waveform_wander, info->waveform_jitter);
+        /* UART1 → P4 */
+        char js[160];
+        int n = snprintf(js, sizeof(js),
+            "{\"dev\":\"s3\",\"radar\":{\"room\":\"%s\",\"move\":\"%s\",\"wander\":%.4f,\"jitter\":%.4f}}\n",
+            rs, ms, info->waveform_wander, info->waveform_jitter);
+        uart_write_bytes(UART_NUM_1, js, n);
+        /* HTTP POST → Flask (only on state change to avoid flooding) */
+        if (changed) report_radar_event(room, human, info->waveform_wander, info->waveform_jitter);
     }
-    /* Debounce state changes: max 1 log per 3 seconds per transition type */
+    /* Debounce state changes: log once per 3 seconds */
     if (room) {
         if (human && esp_log_timestamp() - slm > 3000) { ESP_LOGI(TAG, ">>> MOVING <<<"); slm = esp_log_timestamp(); }
         if (!human && esp_log_timestamp() - slm > 3000) { ESP_LOGI(TAG, ">>> still <<<"); }
@@ -891,6 +924,7 @@ void app_main(void)
     xTaskCreate(rx_task, "rx", 4096, NULL, 5, NULL);
 
     esp_log_level_set("esp_radar", ESP_LOG_INFO);
+    esp_log_level_set("csi_detection_task", ESP_LOG_ERROR); /* suppress high-rate warnings */
 
     /* Console REPL */
     esp_console_repl_t *repl = NULL;
@@ -911,6 +945,16 @@ void app_main(void)
     dec_cfg.outliers_threshold = 0;
 
     ESP_ERROR_CHECK(esp_radar_wifi_init(&wifi_cfg));
+
+    /* Enable MGMT+DATA promiscuous capture for max CSI yield (no display → no SPI conflict) */
+    {
+        wifi_promiscuous_filter_t pf = {
+            .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
+        };
+        esp_wifi_set_promiscuous_filter(&pf);
+        ESP_LOGI(TAG, "Promiscuous filter: MGMT+DATA");
+    }
+
     ESP_ERROR_CHECK(esp_radar_csi_init(&csi_cfg));
     ESP_ERROR_CHECK(esp_radar_dec_init(&dec_cfg));
 
@@ -968,4 +1012,7 @@ void app_main(void)
 
     /* Start radar (WiFi should be connected by now) */
     esp_radar_start();
+
+    /* Start HTTP event reporter (async, no block on send failure) */
+    event_reporter_init();
 }
