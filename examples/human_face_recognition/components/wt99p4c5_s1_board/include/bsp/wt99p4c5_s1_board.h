@@ -209,6 +209,13 @@ i2c_master_bus_handle_t bsp_i2c_get_handle(void);
 esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config);
 
 /**
+ * @brief Get the I2S RX channel handle (for direct ISR callback registration)
+ *
+ * @return i2s_chan_handle_t or NULL if not initialized
+ */
+i2s_chan_handle_t bsp_audio_get_rx_chan(void);
+
+/**
  * @brief Initialize speaker codec device
  *
  * @return Pointer to codec device handle or NULL when error occurred

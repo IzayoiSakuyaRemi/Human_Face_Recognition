@@ -122,8 +122,8 @@ static void uart_rx_task(void *arg)
                 }
                 line_pos = 0;
                 in_binary = true;
-                bin_pos = 0;
-                bin_buf[0] = byte;
+                bin_pos = 1;          // bin_buf[0] already set below
+                bin_buf[0] = byte;    // frame type byte at index 0
                 bin_expected = 2048;  // will be refined when header is parsed
                 continue;
             }

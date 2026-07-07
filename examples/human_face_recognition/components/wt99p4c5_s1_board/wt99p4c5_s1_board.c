@@ -306,6 +306,11 @@ esp_err_t bsp_spiffs_unmount(void)
     return esp_vfs_spiffs_unregister(CONFIG_BSP_SPIFFS_PARTITION_LABEL);
 }
 
+i2s_chan_handle_t bsp_audio_get_rx_chan(void)
+{
+    return i2s_rx_chan;
+}
+
 esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config)
 {
     if (i2s_tx_chan && i2s_rx_chan) {
