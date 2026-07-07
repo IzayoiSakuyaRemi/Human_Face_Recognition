@@ -150,8 +150,24 @@ static void voice_recognition_task(void *arg)
 
     int64_t last_log = 0;
     int read_count = 0;
+    bool was_paused = false;
+    ESP_LOGI(TAG, "🎙 Voice task running: read_bytes=%d stack_hwm=%lu",
+             (int)read_bytes, uxTaskGetStackHighWaterMark(NULL));
+
     while (g_mic_handle) {
-        if (g_voice_paused) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+        if (g_voice_paused) {
+            if (!was_paused) {
+                ESP_LOGI(TAG, "🎙 Voice task PAUSED (xiaozhi mode active)");
+                was_paused = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        if (was_paused) {
+            ESP_LOGI(TAG, "🎙 Voice task RESUMED, hwm=%lu",
+                     uxTaskGetStackHighWaterMark(NULL));
+            was_paused = false;
+        }
 
         // esp_codec_dev_read returns ESP_CODEC_DEV_OK (0) on success,
         // NOT the number of bytes read! The actual data is in audio_buf.
@@ -530,7 +546,14 @@ extern "C" void app_main(void)
         esp_codec_dev_open(g_mic_handle, &fs);
         esp_codec_dev_set_in_gain(g_mic_handle, 40.0);
         esp_codec_dev_set_out_vol(speaker, 70);  // set speaker volume (matches xiaozhi-esp32)
-        ESP_LOGI(TAG, "Audio: BSP init complete");
+        ESP_LOGI(TAG, "🎵 Audio: BSP init complete");
+        ESP_LOGI(TAG, "🎵 I2S config: PORT=%d rate=%d bits=%d ch=%d mask=0x%x mclk_mult=%d",
+                 CONFIG_BSP_I2S_NUM, fs.sample_rate, fs.bits_per_sample,
+                 fs.channel, fs.channel_mask, fs.mclk_multiple);
+        ESP_LOGI(TAG, "🎵 Handles: mic=%p speaker=%p",
+                 (void *)g_mic_handle, (void *)g_speaker_handle);
+        ESP_LOGI(TAG, "🎵 GPIO: MCLK=%d BCLK=%d WS=%d DOUT=%d DIN=%d",
+                 GPIO_NUM_13, GPIO_NUM_12, GPIO_NUM_10, GPIO_NUM_9, GPIO_NUM_11);
     }
 
     // ---- Load Voice Model ----

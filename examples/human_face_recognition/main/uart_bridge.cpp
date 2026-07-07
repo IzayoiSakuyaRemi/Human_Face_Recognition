@@ -76,9 +76,7 @@ static void uart_bin_tx_task(void *arg)
 {
     bin_tx_msg_t msg;
     while (xQueueReceive(s_bin_tx_queue, &msg, portMAX_DELAY) == pdTRUE) {
-        int sent = uart_write_bytes(UART_PORT, (const char *)msg.data, msg.len);
-        ESP_LOGI(TAG, "Bin TX sent %d/%d bytes: [%02X %02X %02X %02X]",
-                 sent, (int)msg.len, msg.data[0], msg.data[1], msg.data[2], msg.data[3]);
+        uart_write_bytes(UART_PORT, (const char *)msg.data, msg.len);
     }
     vTaskDelete(NULL);
 }
@@ -95,7 +93,16 @@ static void uart_rx_task(void *arg)
     static uint8_t bin_buf[2048];
 
     if (!data) { vTaskDelete(NULL); return; }
+
+    uint32_t loop_count = 0;
+    uint32_t pcm_down_count = 0;
+    TickType_t last_hwm_report = xTaskGetTickCount();
+
+    ESP_LOGI(TAG, "RX task start: data=%p (heap) stack_hwm=%lu",
+             (void *)data, uxTaskGetStackHighWaterMark(NULL));
+
     while (1) {
+        loop_count++;
         int rx = uart_read_bytes(UART_PORT, data, UART_RX_BUF / 2 - 1,
                                  pdMS_TO_TICKS(200));
         if (rx <= 0) continue;
@@ -140,8 +147,18 @@ static void uart_rx_task(void *arg)
 
                 if (bin_pos >= bin_expected) {
                     /* Dispatch binary frame */
+                    if (bin_buf[0] == UART_FRAME_PCM_DOWN) {
+                        pcm_down_count++;
+                        ESP_LOGI(TAG, "📥 PCM_DOWN dispatch: len=%d count=%lu loop=%lu hwm=%lu",
+                                 (int)bin_pos, pcm_down_count, loop_count,
+                                 uxTaskGetStackHighWaterMark(NULL));
+                    }
                     for (int c = 0; c < s_frame_cb_count; c++)
                         s_frame_cbs[c](bin_buf[0], bin_buf, bin_pos);
+                    if (bin_buf[0] == UART_FRAME_PCM_DOWN) {
+                        ESP_LOGI(TAG, "📥 PCM_DOWN callback done: hwm=%lu",
+                                 uxTaskGetStackHighWaterMark(NULL));
+                    }
                     in_binary = false;
                     bin_pos = 0;
                 }
@@ -171,6 +188,15 @@ static void uart_rx_task(void *arg)
                 line[line_pos++] = c;
             }
         }
+
+        // Periodic health report every 10 seconds
+        TickType_t now = xTaskGetTickCount();
+        if (now - last_hwm_report >= pdMS_TO_TICKS(10000)) {
+            ESP_LOGI(TAG, "📊 RX health: loops=%lu pcm_down=%lu hwm=%lu",
+                     loop_count, pcm_down_count,
+                     uxTaskGetStackHighWaterMark(NULL));
+            last_hwm_report = now;
+        }
     }
     free(data);
     vTaskDelete(NULL);
@@ -188,7 +214,8 @@ void uart_bridge_init(void)
         .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    ESP_ERROR_CHECK(uart_driver_install(UART_PORT, UART_RX_BUF, 1024, 0, NULL, 0));
+    // TX buffer MUST be > 1928 (max PCM frame) to avoid ring-buffer wrap bugs
+    ESP_ERROR_CHECK(uart_driver_install(UART_PORT, UART_RX_BUF, 4096, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_PORT, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(UART_PORT, UART_TX_PIN, UART_RX_PIN,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
@@ -196,8 +223,8 @@ void uart_bridge_init(void)
     s_tx_queue     = xQueueCreate(UART_TX_Q_LEN, 256);
     s_bin_tx_queue = xQueueCreate(UART_BIN_TX_Q_LEN, sizeof(bin_tx_msg_t));
     xTaskCreatePinnedToCore(uart_tx_task,     "uart_tx",     3072, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(uart_bin_tx_task, "uart_bin_tx", 4096, NULL, 3, NULL, 0);
-    xTaskCreatePinnedToCore(uart_rx_task,     "uart_rx",     4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(uart_bin_tx_task, "uart_bin_tx", 4096, NULL, 3, NULL, 1);
+    xTaskCreatePinnedToCore(uart_rx_task,     "uart_rx",     6144, NULL, 2, NULL, 0);
 
     ESP_LOGI(TAG, "UART1 bridge: TX=GPIO%d RX=GPIO%d baud=%d (binary frames enabled)",
              UART_TX_PIN, UART_RX_PIN, UART_BAUD);
@@ -225,7 +252,6 @@ int uart_bridge_send_frame(uint8_t type, const uint8_t *data, size_t len)
         ESP_LOGW(TAG, "Frame TX queue full");
         return 0;
     }
-    ESP_LOGI(TAG, "Frame TX: type=0x%02X len=%d", type, (int)len);
     return (int)len;
 }
 

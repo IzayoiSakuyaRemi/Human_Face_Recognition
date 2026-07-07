@@ -34,25 +34,61 @@ static void on_pcm_down_frame(uint8_t type, const uint8_t *data, size_t len)
     if (!uart_frame_parse_pcm(data, len, &hdr, &pcm, &count))
         return;
 
+    ESP_LOGI(TAG, "PCM_DOWN rx: seq=%u samples=%u speaker=%p",
+             (unsigned)hdr.seq, (unsigned)count, (void *)g_speaker_handle);
+
+#if 0  // DISABLED: I2S TX DMA corrupts s_frame_cbs[] function pointers
     if (g_speaker_handle && count > 0) {
+        ESP_LOGI(TAG, "PCM_DOWN -> esp_codec_dev_write(%d bytes)", (int)(count * sizeof(int16_t)));
         esp_codec_dev_write(g_speaker_handle, (void *)pcm, count * sizeof(int16_t));
+        ESP_LOGI(TAG, "PCM_DOWN write done");
     }
+#endif
+    ESP_LOGI(TAG, "PCM_DOWN speaker write SKIPPED (disabled for debug)");
 }
 
 /* ── Mic capture task ──────────────────────── */
 static void mic_capture_task(void *arg)
 {
     const int kSamplesPerFrame = 960;  // 60ms @ 16kHz
+    // CRITICAL: I2S DMA buffer is 512 bytes. Reading >512 bytes per call
+    // requires multi-DMA-transfer collection, which triggers driver bugs on
+    // ESP32-P4 (v5.5.4) causing memory corruption. Read in 240-sample chunks
+    // (480 bytes < 512), accumulate 4 reads per PCM_UP frame.
+    const int kChunkSamples = 240;  // 240 samples × 2 bytes = 480 bytes < 512 DMA buf
+    const int kChunksPerFrame = kSamplesPerFrame / kChunkSamples;  // 4 reads per frame
     int16_t buf[kSamplesPerFrame];
-    static uint8_t fbuf[PCM_FRAME_MAX_TOTAL];  // BSS, not stack (~1928 bytes saved)
+    static uint8_t fbuf[PCM_FRAME_MAX_TOTAL];  // BSS (1928 bytes)
 
-    ESP_LOGI(TAG, "Mic capture started: %d samples/frame", kSamplesPerFrame);
+    ESP_LOGI(TAG, "Mic capture started: %d samples/frame, %d samples/chunk × %d chunks, buf=%p (stack) fbuf=%p (BSS) stack_hwm=%lu",
+             kSamplesPerFrame, kChunkSamples, kChunksPerFrame, (void *)buf, (void *)fbuf,
+             uxTaskGetStackHighWaterMark(NULL));
+
+    uint32_t read_ok = 0, read_fail = 0;
+    TickType_t last_report = xTaskGetTickCount();
 
     while (s_running && g_mic_handle) {
-        int ret = esp_codec_dev_read(g_mic_handle, buf, sizeof(buf));
-        if (ret != 0) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-            continue;
+        // Read 4 small chunks to build one 960-sample frame
+        for (int chunk = 0; chunk < kChunksPerFrame; chunk++) {
+            int16_t *dest = buf + chunk * kChunkSamples;
+            int ret = esp_codec_dev_read(g_mic_handle, dest,
+                                          sizeof(int16_t) * kChunkSamples);
+            if (ret != 0) {
+                read_fail++;
+                vTaskDelay(pdMS_TO_TICKS(1));
+                chunk--;  // retry this chunk
+                continue;
+            }
+        }
+        read_ok++;
+
+        // Periodic stats every 10 seconds
+        TickType_t now = xTaskGetTickCount();
+        if (now - last_report >= pdMS_TO_TICKS(10000)) {
+            ESP_LOGI(TAG, "Mic stats: ok=%lu fail=%lu hwm=%lu",
+                     read_ok, read_fail,
+                     uxTaskGetStackHighWaterMark(NULL));
+            last_report = now;
         }
 
         size_t flen = uart_frame_build_pcm(
@@ -65,7 +101,8 @@ static void mic_capture_task(void *arg)
         }
     }
 
-    ESP_LOGI(TAG, "Mic capture stopped");
+    ESP_LOGI(TAG, "Mic capture stopped: ok=%lu fail=%lu final_hwm=%lu",
+             read_ok, read_fail, uxTaskGetStackHighWaterMark(NULL));
     vTaskDelete(NULL);
 }
 
@@ -81,9 +118,11 @@ void xiaozhi_audio_bridge_start(void)
     // Register PCM_DOWN handler
     uart_bridge_on_frame(on_pcm_down_frame);
 
-    // Create mic capture task — use PSRAM for stack (internal DRAM is tight)
+    // Create mic capture task on CPU1 — separates heavy mic I2S reads from
+    // CPU0's ISR load (I2S ISR + UART ISR + ESP timer). LVGL is idle during
+    // xiaozhi mode (face detection paused), so CPU1 has plenty of bandwidth.
     BaseType_t ret = xTaskCreatePinnedToCore(mic_capture_task, "xz_mic",
-        6144, NULL, 3, &s_mic_task, 0);
+        8192, NULL, 3, &s_mic_task, 1);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create xz_mic task! Internal DRAM free: %lu",
                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
@@ -91,7 +130,7 @@ void xiaozhi_audio_bridge_start(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Xiaozhi audio bridge started (stack=4096, ret=%d)", (int)ret);
+    ESP_LOGI(TAG, "Xiaozhi audio bridge started (stack=8192, core=1, ret=%d)", (int)ret);
 }
 
 void xiaozhi_audio_bridge_stop(void)
@@ -100,8 +139,7 @@ void xiaozhi_audio_bridge_stop(void)
 
     s_running = false;
 
-    // Wait for mic task to actually exit — it may be blocked in i2s_channel_read
-    // for up to 10 seconds. We must ensure it's gone before voice_cmd resumes I2S reads.
+    // Wait for mic task to actually exit
     if (s_mic_task) {
         int wait_ms = 0;
         while (eTaskGetState(s_mic_task) != eDeleted && wait_ms < 5000) {

@@ -2,6 +2,7 @@
 #include "who_recognition_app_lcd.hpp"
 #include "esp_brookesia.hpp"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "uart_bridge.hpp"
 #include "xiaozhi/uart_frame_protocol.h"
 #include "xiaozhi_audio_bridge.hpp"
@@ -102,21 +103,28 @@ bool FaceRecognitionApp::run()
             lv_obj_t *btn_target = lv_event_get_target_obj(e);
 
             if (s_xiaozhi_mode) {
+                ESP_LOGI(TAG, "🔄 Entering XiaoZhi mode... (free_heap=%lu internal=%lu psram=%lu)",
+                         esp_get_free_heap_size(),
+                         heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                         heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                 if (g_recognition_app) g_recognition_app->pause();
                 g_voice_paused = true;
                 uint8_t f[4] = {UART_FRAME_CTRL, CTRL_ENTER_XIAOZHI, 0, 0};
                 uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
                 xiaozhi_audio_bridge_start();  // start mic→S3, register PCM_DOWN→speaker
-                ESP_LOGI(TAG, "Switched to XIAOZHI mode");
+                ESP_LOGI(TAG, "✅ Switched to XIAOZHI mode (audio bridge active=%d)",
+                         (int)xiaozhi_audio_bridge_is_active());
                 lv_label_set_text(lv_obj_get_child(btn_target, 0), "Guard");
                 lv_obj_set_style_bg_color(btn_target, lv_color_hex(0x0f6040), LV_PART_MAIN);
             } else {
+                ESP_LOGI(TAG, "🔄 Exiting XiaoZhi mode...");
                 xiaozhi_audio_bridge_stop();   // stop mic task, unregister PCM_DOWN
                 uint8_t f[4] = {UART_FRAME_CTRL, CTRL_EXIT_XIAOZHI, 0, 0};
                 uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
                 if (g_recognition_app) g_recognition_app->resume();
                 g_voice_paused = false;
-                ESP_LOGI(TAG, "Switched to GUARD mode");
+                ESP_LOGI(TAG, "✅ Switched to GUARD mode (free_heap=%lu)",
+                         esp_get_free_heap_size());
                 lv_label_set_text(lv_obj_get_child(btn_target, 0), "XiaoZhi");
                 lv_obj_set_style_bg_color(btn_target, lv_color_hex(0x0f3460), LV_PART_MAIN);
             }
