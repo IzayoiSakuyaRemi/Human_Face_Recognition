@@ -1,23 +1,154 @@
 /* Board + Lang implementation for S3 */
 #include "board.h"
 #include "audio/audio_codec.h"
+#include "system_info.h"
+#include "settings.h"
 #include <esp_mac.h>
-#include <esp_http_client.h>
+#include <esp_chip_info.h>
+#include <esp_partition.h>
+#include <esp_ota_ops.h>
+#include <esp_app_desc.h>
+#include <esp_heap_caps.h>
+#include <esp_random.h>
+#include <esp_psram.h>
 #include <esp_crt_bundle.h>
 #include <esp_tls.h>
 #include <esp_log.h>
+#include <freertos/event_groups.h>
+#include <mqtt_client.h>
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 
-/* ── S3Mqtt ─────────────────────────────────── */
+/* ── S3Mqtt (real esp_mqtt_client wrapper, synchronous Connect) ── */
 class S3Mqtt : public Mqtt {
+    esp_mqtt_client_handle_t client_ = nullptr;
+    bool connected_ = false;
+    int last_error_ = 0;
+    std::string broker_uri_;
+    std::string client_id_;
+    std::string username_;
+    std::string password_;
+    EventGroupHandle_t sync_group_ = nullptr;
+
+    static void mqtt_event_handler(void *arg, esp_event_base_t base,
+                                    int32_t event_id, void *event_data) {
+        auto *self = static_cast<S3Mqtt *>(arg);
+        self->onMqttEvent(event_id, (esp_mqtt_event_handle_t)event_data);
+    }
+
+    void onMqttEvent(int32_t event_id, esp_mqtt_event_handle_t ev) {
+        switch (event_id) {
+        case MQTT_EVENT_CONNECTED:
+            ESP_LOGI("S3Mqtt", "Connected");
+            connected_ = true;
+            if (sync_group_) xEventGroupSetBits(sync_group_, 1);
+            if (on_conn_) on_conn_();
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            ESP_LOGI("S3Mqtt", "Disconnected");
+            connected_ = false;
+            if (on_disc_) on_disc_();
+            break;
+        case MQTT_EVENT_DATA: {
+            std::string topic(ev->topic, ev->topic_len);
+            std::string payload(ev->data, ev->data_len);
+            if (on_msg_) on_msg_(topic, payload);
+            break;
+        }
+        case MQTT_EVENT_ERROR:
+            ESP_LOGE("S3Mqtt", "Error");
+            last_error_ = -1;
+            if (sync_group_) xEventGroupSetBits(sync_group_, 2);  // error bit
+            break;
+        case MQTT_EVENT_BEFORE_CONNECT:
+            ESP_LOGI("S3Mqtt", "Connecting to %s...", broker_uri_.c_str());
+            break;
+        default:
+            break;
+        }
+    }
+
+public:
+    ~S3Mqtt() override { Disconnect(); if (sync_group_) vEventGroupDelete(sync_group_); }
+
     bool Connect(const std::string broker, int port, const std::string id,
-                 const std::string user, const std::string pass) override { return false; }
-    void Disconnect() override {}
-    bool Publish(const std::string t, const std::string d, int qos) override { return false; }
-    bool Subscribe(const std::string t, int qos) override { return false; }
-    bool IsConnected() override { return false; }
-    int GetLastError() override { return -1; }
+                 const std::string user, const std::string pass) override {
+        client_id_ = id;
+        username_  = user;
+        password_  = pass;
+
+        /* Build broker URI (strip mqtts:// prefix if present, keep full URI) */
+        if (broker.find("mqtts://") == 0 || broker.find("mqtt://") == 0) {
+            broker_uri_ = broker;
+        } else {
+            broker_uri_ = (port == 8883 ? "mqtts://" : "mqtt://") + broker + ":" + std::to_string(port);
+        }
+
+        esp_mqtt_client_config_t cfg = {};
+        cfg.broker.address.uri = broker_uri_.c_str();
+        cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+        cfg.credentials.client_id = client_id_.c_str();
+        if (!username_.empty()) cfg.credentials.username = username_.c_str();
+        if (!password_.empty()) cfg.credentials.authentication.password = password_.c_str();
+        cfg.session.keepalive = keep_alive_;
+
+        // Create sync EventGroup for blocking Connect()
+        if (!sync_group_) sync_group_ = xEventGroupCreate();
+        xEventGroupClearBits(sync_group_, 0xFF);
+
+        client_ = esp_mqtt_client_init(&cfg);
+        if (!client_) {
+            ESP_LOGE("S3Mqtt", "esp_mqtt_client_init failed");
+            last_error_ = -1;
+            return false;
+        }
+        esp_mqtt_client_register_event(client_, MQTT_EVENT_ANY, mqtt_event_handler, this);
+        esp_err_t err = esp_mqtt_client_start(client_);
+        if (err != ESP_OK) {
+            ESP_LOGE("S3Mqtt", "esp_mqtt_client_start failed: %d", err);
+            last_error_ = err;
+            esp_mqtt_client_destroy(client_);
+            client_ = nullptr;
+            return false;
+        }
+
+        // Block until connected or error (10s timeout)
+        EventBits_t bits = xEventGroupWaitBits(sync_group_, 0x03, pdTRUE, pdFALSE,
+                                                pdMS_TO_TICKS(10000));
+        if (bits & 1) {
+            ESP_LOGI("S3Mqtt", "Connect() completed successfully");
+            return true;
+        }
+        ESP_LOGE("S3Mqtt", "Connect() timeout or error (bits=0x%02x)", (int)bits);
+        return false;
+    }
+
+    void Disconnect() override {
+        if (client_) {
+            esp_mqtt_client_stop(client_);
+            esp_mqtt_client_destroy(client_);
+            client_ = nullptr;
+        }
+        connected_ = false;
+    }
+
+    bool Publish(const std::string topic, const std::string payload, int qos) override {
+        if (!client_ || !connected_) return false;
+        int ret = esp_mqtt_client_publish(client_, topic.c_str(), payload.c_str(), 0, qos, 0);
+        return ret >= 0;
+    }
+
+    bool Subscribe(const std::string topic, int qos) override {
+        if (!client_ || !connected_) return false;
+        int ret = esp_mqtt_client_subscribe(client_, topic.c_str(), qos);
+        return ret >= 0;
+    }
+
+    bool IsConnected() override { return connected_; }
+    int GetLastError() override { return last_error_; }
 };
 
 /* ── S3WebSocket ────────────────────────────── */
@@ -29,14 +160,105 @@ class S3WebSocket : public WebSocket {
     bool IsConnected() const override { return false; }
 };
 
-/* ── S3Udp ──────────────────────────────────── */
+/* ── S3Udp (real lwIP UDP socket) ────────────── */
 class S3Udp : public Udp {
-    bool Connect(const std::string& h, int p) override { return false; }
-    void Disconnect() override {}
-    bool Send(const std::string& d) override { return false; }
-    bool Send(const std::vector<uint8_t>& d) override { return false; }
-    void OnMessage(std::function<void(const std::string&)> cb) override {}
-    bool IsConnected() const override { return false; }
+    int sock_ = -1;
+    bool connected_ = false;
+    std::function<void(const std::string&)> on_message_;
+    TaskHandle_t rx_task_ = nullptr;
+    bool running_ = true;
+
+    static void rx_task_func(void *arg) {
+        auto *self = static_cast<S3Udp *>(arg);
+        self->rxLoop();
+        vTaskDelete(NULL);
+    }
+
+    void rxLoop() {
+        uint8_t buf[2048];
+        while (running_) {
+            fd_set rfds; FD_ZERO(&rfds); FD_SET(sock_, &rfds);
+            struct timeval tv = { .tv_sec = 0, .tv_usec = 500000 }; // 500ms
+            int ret = select(sock_ + 1, &rfds, NULL, NULL, &tv);
+            if (ret <= 0) continue;
+            int len = recvfrom(sock_, buf, sizeof(buf), 0, NULL, NULL);
+            if (len > 0 && on_message_) {
+                on_message_(std::string((const char *)buf, len));
+            }
+        }
+    }
+
+public:
+    ~S3Udp() override { Disconnect(); }
+
+    bool Connect(const std::string& host, int port) override {
+        if (sock_ >= 0) Disconnect();
+
+        sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock_ < 0) {
+            ESP_LOGE("S3Udp", "socket failed: %d", errno);
+            return false;
+        }
+
+        // Resolve hostname
+        struct addrinfo hints = {}, *res = nullptr;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        char port_str[8]; snprintf(port_str, sizeof(port_str), "%d", port);
+        if (getaddrinfo(host.c_str(), port_str, &hints, &res) != 0 || !res) {
+            ESP_LOGE("S3Udp", "getaddrinfo failed for %s:%d", host.c_str(), port);
+            close(sock_); sock_ = -1;
+            return false;
+        }
+
+        if (connect(sock_, res->ai_addr, res->ai_addrlen) < 0) {
+            ESP_LOGE("S3Udp", "connect failed: %d", errno);
+            freeaddrinfo(res);
+            close(sock_); sock_ = -1;
+            return false;
+        }
+        freeaddrinfo(res);
+
+        // Set non-blocking
+        int flags = fcntl(sock_, F_GETFL, 0);
+        fcntl(sock_, F_SETFL, flags | O_NONBLOCK);
+
+        // Spawn receive task (needs ~4KB for AES decryption in callback chain)
+        running_ = true;
+        xTaskCreate(rx_task_func, "s3udp_rx", 5120, this, 5, &rx_task_);
+
+        connected_ = true;
+        ESP_LOGI("S3Udp", "Connected to %s:%d", host.c_str(), port);
+        return true;
+    }
+
+    void Disconnect() override {
+        running_ = false;
+        rx_task_ = nullptr; // task deletes itself
+        if (sock_ >= 0) {
+            close(sock_);
+            sock_ = -1;
+        }
+        connected_ = false;
+    }
+
+    bool Send(const std::string& data) override {
+        if (sock_ < 0 || !connected_) return false;
+        int ret = send(sock_, data.data(), data.size(), 0);
+        return ret >= 0;
+    }
+
+    bool Send(const std::vector<uint8_t>& data) override {
+        if (sock_ < 0 || !connected_) return false;
+        int ret = send(sock_, data.data(), data.size(), 0);
+        return ret >= 0;
+    }
+
+    void OnMessage(std::function<void(const std::string&)> cb) override {
+        on_message_ = std::move(cb);
+    }
+
+    bool IsConnected() const override { return connected_ && sock_ >= 0; }
 };
 
 /* ── S3Tcp ──────────────────────────────────── */
@@ -235,9 +457,106 @@ Board::Board() { net_ = std::make_unique<S3NI>(); }
 AudioCodec *g_uart_codec = nullptr;
 AudioCodec* Board::GetAudioCodec() { return g_uart_codec; }
 std::string Board::GetUuid() {
-    uint8_t m[6]; esp_read_mac(m, ESP_MAC_WIFI_STA);
-    char b[13]; snprintf(b, 13, "%02X%02X%02X%02X%02X%02X", m[0],m[1],m[2],m[3],m[4],m[5]);
-    return b;
+    // Return UUID v4 (same as in GetSystemInfoJson), not MAC hex.
+    // The OTA server requires Client-Id header to be a UUID.
+    Settings board_settings("board", true);
+    std::string uuid = board_settings.GetString("uuid");
+    if (uuid.empty()) {
+        // Generate on first boot
+        uint8_t rnd[16]; esp_fill_random(rnd, sizeof(rnd));
+        rnd[6] = (rnd[6] & 0x0F) | 0x40;
+        rnd[8] = (rnd[8] & 0x3F) | 0x80;
+        char buf[37];
+        snprintf(buf, sizeof(buf),
+            "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+            rnd[0],rnd[1],rnd[2],rnd[3], rnd[4],rnd[5],rnd[6],rnd[7],
+            rnd[8],rnd[9],rnd[10],rnd[11], rnd[12],rnd[13],rnd[14],rnd[15]);
+        uuid = buf;
+        board_settings.SetString("uuid", uuid);
+    }
+    return uuid;
+}
+std::string Board::GetSystemInfoJson() {
+    /* Match original xiaozhi-esp32 format exactly so OTA server accepts this device */
+
+    // Generate UUID v4 if not already stored
+    Settings board_settings("board", true);
+    std::string uuid = board_settings.GetString("uuid");
+    if (uuid.empty()) {
+        uint8_t rnd[16]; esp_fill_random(rnd, sizeof(rnd));
+        rnd[6] = (rnd[6] & 0x0F) | 0x40;   // version 4
+        rnd[8] = (rnd[8] & 0x3F) | 0x80;   // variant 1
+        char buf[37];
+        snprintf(buf, sizeof(buf),
+            "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+            rnd[0],rnd[1],rnd[2],rnd[3], rnd[4],rnd[5],rnd[6],rnd[7],
+            rnd[8],rnd[9],rnd[10],rnd[11], rnd[12],rnd[13],rnd[14],rnd[15]);
+        uuid = buf;
+        board_settings.SetString("uuid", uuid);
+    }
+
+    // MAC address with colons: "xx:xx:xx:xx:xx:xx"
+    uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str),
+        "%02x:%02x:%02x:%02x:%02x:%02x", mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
+
+    auto app_desc = esp_app_get_description();
+    esp_chip_info_t ci; esp_chip_info(&ci);
+
+    std::string json = "{\"version\":2,\"language\":\"en-US\",";
+    json += "\"flash_size\":" + std::to_string(SystemInfo::GetFlashSize()) + ",";
+#ifdef CONFIG_SPIRAM
+    json += "\"psram_size\":" + std::to_string(esp_psram_get_size()) + ",";
+#else
+    json += "\"psram_size\":0,";
+#endif
+    json += "\"minimum_free_heap_size\":\"" + std::to_string(SystemInfo::GetMinimumFreeHeapSize()) + "\",";
+    json += "\"mac_address\":\"" + SystemInfo::GetMacAddress() + "\",";
+    json += "\"uuid\":\"" + uuid + "\",";
+    json += "\"chip_model_name\":\"" + SystemInfo::GetChipModelName() + "\",";
+
+    json += "\"chip_info\":{";
+    json += "\"model\":" + std::to_string(ci.model) + ",";
+    json += "\"cores\":" + std::to_string(ci.cores) + ",";
+    json += "\"revision\":" + std::to_string(ci.revision) + ",";
+    json += "\"features\":" + std::to_string(ci.features) + "},";
+
+    json += "\"application\":{";
+    json += "\"name\":\"" + std::string(app_desc->project_name) + "\",";
+    json += "\"version\":\"" + std::string(app_desc->version) + "\",";
+    json += "\"compile_time\":\"" + std::string(app_desc->date) + "T" + std::string(app_desc->time) + "Z\",";
+    json += "\"idf_version\":\"" + std::string(app_desc->idf_ver) + "\",";
+    // Compute elf_sha256
+    char sha256_str[65];
+    for (int i = 0; i < 32; i++) {
+        snprintf(sha256_str + i * 2, sizeof(sha256_str) - i * 2, "%02x", app_desc->app_elf_sha256[i]);
+    }
+    json += "\"elf_sha256\":\"" + std::string(sha256_str) + "\"";
+    json += "},";
+
+    json += "\"partition_table\":[";
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (it) {
+        const esp_partition_t *p = esp_partition_get(it);
+        json += "{\"label\":\"" + std::string(p->label) + "\",";
+        json += "\"type\":" + std::to_string(p->type) + ",";
+        json += "\"subtype\":" + std::to_string(p->subtype) + ",";
+        json += "\"address\":" + std::to_string(p->address) + ",";
+        json += "\"size\":" + std::to_string(p->size) + "},";
+        it = esp_partition_next(it);
+    }
+    if (json.back() == ',') json.pop_back();
+    json += "],";
+
+    json += "\"ota\":{\"label\":\"factory\"},";
+
+    // Display info (S3 has no display hardware)
+    json += "\"display\":{\"monochrome\":false,\"width\":0,\"height\":0},";
+
+    json += "\"board\":" + GetBoardJson();
+    json += "}";
+    return json;
 }
 
 /* ── Lang strings ───────────────────────────── */

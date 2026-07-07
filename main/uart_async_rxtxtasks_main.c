@@ -38,11 +38,15 @@
 #include "xiaozhi/uart_frame_protocol.h"
 #include "xiaozhi/xiaozhi_relay.h"
 
+/* ── C-linkage wrapper for UartAudioCodec (C++ class) ──
+ * Called from this C file's demux task to feed PCM into the C++ codec. */
+extern void uart_audio_codec_feed_pcm(const int16_t *data, int samples);
+
 /* ── UART1 (to P4) ────────────────────────── */
 #define TXD_PIN          GPIO_NUM_17
 #define RXD_PIN          GPIO_NUM_18
 #define UART_BAUD        921600
-#define RX_BUF_SIZE      8192  // 4 PCM frames @60ms each = 268ms buffer depth
+#define RX_BUF_SIZE      16384  // 8 PCM frames @60ms each = 537ms buffer depth
 
 /* ── WiFi AP provisioning ─────────────────── */
 #define AP_SSID          "S3-Config"
@@ -218,10 +222,10 @@ static void uart_frame_demux_task(void *arg)
         for (int i = 0; i < r; i++) {
             uint8_t byte = d[i];
 
-            /* Detect binary frame start */
+            /* Detect binary frame start — skip ADR-018 during xiaozhi mode */
             if (!in_binary && (byte == UART_FRAME_CTRL ||
                                byte == UART_FRAME_PCM_UP ||
-                               byte == UART_FRAME_ADR018)) {
+                               (byte == UART_FRAME_ADR018 && !xiaozhi_relay_is_active()))) {
                 bin_buf[0] = byte;
                 bin_pos = 1;  /* position 0 filled, next byte goes to 1 */
                 in_binary = true;
@@ -230,22 +234,43 @@ static void uart_frame_demux_task(void *arg)
             }
 
             if (in_binary) {
+                /* Bounds check: never write past bin_buf[2048] */
+                if (bin_pos >= sizeof(bin_buf)) {
+                    ESP_LOGW(TAG, "Binary frame overflow (%d bytes), aborting", (int)bin_pos);
+                    in_binary = false;
+                    continue;
+                }
                 bin_buf[bin_pos++] = byte;
-                ESP_LOGI(TAG, "Bin[%d]=0x%02X exp=%d",
+                ESP_LOGD(TAG, "Bin[%d]=0x%02X exp=%d",
                          (int)(bin_pos - 1), byte, (int)bin_expected);
                 /* Determine expected length from header */
                 if (bin_pos >= 4 && bin_buf[0] == UART_FRAME_CTRL) {
                     uint16_t pl = (uint16_t)bin_buf[2] | ((uint16_t)bin_buf[3] << 8);
+                    if (pl > CTRL_FRAME_MAX_JSON) {
+                        /* False CTRL frame — 0x04 in PCM data with garbage payload_len */
+                        in_binary = false;
+                        continue;
+                    }
                     bin_expected = 4 + pl;
                 } else if (bin_pos >= 6 && bin_buf[0] == UART_FRAME_PCM_UP) {
                     uint16_t sc = (uint16_t)bin_buf[4] | ((uint16_t)bin_buf[5] << 8);
+                    if (sc != 960) {
+                        /* False frame start — 0x02 appeared inside PCM data.
+                         * Invalid sample_count. Abort binary mode immediately
+                         * to avoid bin_buf overflow from huge bin_expected. */
+                        in_binary = false;
+                        continue;
+                    }
                     bin_expected = 6 + (size_t)sc * 2 + 2;
                 }
 
                 if (bin_pos >= bin_expected) {
                     /* Dispatch */
                     uint8_t type = bin_buf[0];
-                    ESP_LOGI(TAG, "Binary frame rx: type=0x%02X len=%d", type, (int)bin_pos);
+                    if (type != UART_FRAME_PCM_UP)  // PCM_UP is too frequent (~17/sec)
+                        ESP_LOGI(TAG, "Binary frame rx: type=0x%02X len=%d", type, (int)bin_pos);
+                    else
+                        ESP_LOGD(TAG, "Binary frame rx: type=0x%02X len=%d", type, (int)bin_pos);
                     if (type == UART_FRAME_CTRL) {
                         ctrl_frame_header_t *ctrl = (ctrl_frame_header_t *)bin_buf;
                         switch (ctrl->cmd) {
@@ -265,15 +290,22 @@ static void uart_frame_demux_task(void *arg)
                             ESP_LOGI(TAG, "Unknown ctrl cmd %d", ctrl->cmd);
                         }
                     } else if (type == UART_FRAME_PCM_UP) {
-                        /* P4→S3: raw PCM from microphone → relay to xiaozhi */
-                        if (xiaozhi_relay_is_active()) {
-                            xiaozhi_relay_on_opus_from_p4(&bin_buf[PCM_FRAME_HEADER_SIZE],
-                                (uint16_t)(bin_pos - PCM_FRAME_HEADER_SIZE - PCM_FRAME_CRC_SIZE));
+                        /* P4→S3: raw PCM from microphone → feed UartAudioCodec */
+                        pcm_frame_header_t pcm_hdr;
+                        const int16_t *pcm_data;
+                        uint16_t pcm_count;
+                        if (uart_frame_parse_pcm(bin_buf, bin_pos, &pcm_hdr, &pcm_data, &pcm_count)) {
+                            static uint32_t s_pcm_count = 0;
+                            if (++s_pcm_count % 50 == 1)  // log every 50th frame (~3 sec)
+                                ESP_LOGI(TAG, "PCM_UP #%lu: seq=%u samples=%u",
+                                         s_pcm_count, pcm_hdr.seq, pcm_count);
+                            uart_audio_codec_feed_pcm(pcm_data, pcm_count);
+                        } else {
+                            ESP_LOGW(TAG, "PCM_UP CRC mismatch, dropping frame");
                         }
                     } else if (type == UART_FRAME_ADR018) {
-                        /* Existing ADR-018 handling (future: route based on mode) */
+                        /* Existing ADR-018 radar binary (unchanged, routed during guard mode) */
                     }
-                    /* PCM_UP not yet implemented — will be used by xiaozhi stage */
                     in_binary = false;
                     bin_pos = 0;
                 }
@@ -1075,7 +1107,7 @@ void app_main(void)
     /* UART1 bridge to P4 */
     uart_init();
     ESP_LOGI(TAG, "UART1 ready: TX=%d RX=%d baud=%d", TXD_PIN, RXD_PIN, UART_BAUD);
-    xTaskCreate(uart_frame_demux_task, "uart_demux", 6144, NULL, 5, NULL);
+    xTaskCreate(uart_frame_demux_task, "uart_demux", 8192, NULL, 5, NULL);
 
     esp_log_level_set("esp_radar", ESP_LOG_INFO);
     esp_log_level_set("csi_detection_task", ESP_LOG_ERROR); /* suppress high-rate warnings */

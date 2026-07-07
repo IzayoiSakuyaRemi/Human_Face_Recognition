@@ -91,6 +91,8 @@ esp_err_t Ota::CheckVersion() {
     auto http = SetupHttp();
 
     std::string data = board.GetSystemInfoJson();
+    ESP_LOGI(TAG, "OTA POST %s", url.c_str());
+    ESP_LOGI(TAG, "OTA body: %s", data.c_str());
     std::string method = data.length() > 0 ? "POST" : "GET";
     http->SetContent(std::move(data));
 
@@ -103,16 +105,19 @@ esp_err_t Ota::CheckVersion() {
     auto status_code = http->GetStatusCode();
     if (status_code != 200) {
         ESP_LOGE(TAG, "Failed to check version, status code: %d", status_code);
+        std::string resp = http->ReadAll();
+        ESP_LOGE(TAG, "Server response: %s", resp.c_str());
         return status_code;
     }
 
     data = http->ReadAll();
     http->Close();
+    ESP_LOGI(TAG, "OTA response: %s", data.c_str());
 
     // Response: { "firmware": { "version": "1.0.0", "url": "http://" } }
     // Parse the JSON response and check if the version is newer
     // If it is, set has_new_version_ to true and store the new version and URL
-    
+
     cJSON *root = cJSON_Parse(data.c_str());
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
@@ -395,11 +400,16 @@ std::vector<int> Ota::ParseVersion(const std::string& version) {
     std::vector<int> versionNumbers;
     std::stringstream ss(version);
     std::string segment;
-    
+
     while (std::getline(ss, segment, '.')) {
-        versionNumbers.push_back(std::stoi(segment));
+        // Guard against non-numeric version strings (e.g. git hashes like "c22cb18-dirty")
+        bool is_numeric = !segment.empty();
+        for (char c : segment) {
+            if (c < '0' || c > '9') { is_numeric = false; break; }
+        }
+        versionNumbers.push_back(is_numeric ? std::stoi(segment) : 0);
     }
-    
+
     return versionNumbers;
 }
 

@@ -4,7 +4,7 @@ set(SRCS
     "csi_adr018.c"
     "event_reporter.c"
     "xiaozhi/uart_frame_protocol.c"
-    "xiaozhi/xiaozhi_relay.c"
+    "xiaozhi/xiaozhi_relay.cc"
 )
 
 # ── S3 shim (C++) ──
@@ -31,6 +31,7 @@ list(APPEND SRCS
     "xiaozhi/audio/audio_service.cc"
     "xiaozhi/audio/demuxer/ogg_demuxer.cc"
     "xiaozhi/audio/processors/no_audio_processor.cc"
+    "xiaozhi/audio/codecs/uart_audio_codec.cc"
 )
 
 idf_component_register(
@@ -42,7 +43,7 @@ idf_component_register(
         esp-radar mbedtls esp_partition esp_timer
         esp_audio_codec esp_audio_effects json
         spi_flash esp_app_format app_update pthread
-        esp_pm efuse mqtt
+        esp_pm efuse mqtt esp_psram
     INCLUDE_DIRS
         "."
         "xiaozhi"
@@ -51,6 +52,7 @@ idf_component_register(
         "xiaozhi/audio/processors"
         "xiaozhi/audio/demuxer"
         "xiaozhi/audio/wake_words"
+        "xiaozhi/audio/codecs"
         "xiaozhi/assets"
         "xiaozhi/led"
 )
