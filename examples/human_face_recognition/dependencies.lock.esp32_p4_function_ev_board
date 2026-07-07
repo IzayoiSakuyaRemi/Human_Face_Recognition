@@ -39,20 +39,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 3.4.0~2
-  espressif/eppp_link:
-    component_hash: 04f7f31868b8ae6014c96132740a192d09611a6e46aaa7038c865ffc7e26b38f
-    dependencies:
-    - name: espressif/esp_serial_slave_link
-      registry_url: https://components.espressif.com
-      require: private
-      version: ^1.1.0
-    - name: idf
-      require: private
-      version: '>=5.2'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.1.5
   espressif/esp-brookesia:
     component_hash: da224da7a829bb930793c0c779b44227238a57191ca360908c8f2b051d220223
     dependencies:
@@ -230,14 +216,6 @@ dependencies:
     - esp32s3
     - esp32p4
     version: 1.3.0
-  espressif/esp_hosted:
-    dependencies:
-    - name: idf
-      version: '>=5.3'
-    source:
-      path: D:\works\esp-who-master\examples\human_face_recognition\managed_components\espressif__esp_hosted
-      type: local
-    version: 2.0.17
   espressif/esp_ipa:
     component_hash: da24ae8139754b48af75a8c737b81e8eb7fc5a7af4ced5d70af1feb3a056838c
     dependencies:
@@ -359,16 +337,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.0.8
-  espressif/esp_serial_slave_link:
-    component_hash: ac1776806de0a6e371c84e87898bb983e19ce62aa7f1e2e5c4a3b0234a575d2c
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.0'
-    source:
-      registry_url: https://components.espressif.com
-      type: service
-    version: 1.1.2
   espressif/esp_video:
     component_hash: 2391b4f34230cb1eeea23a0cb1920ae762bb9f0252d4947fe981154530519198
     dependencies:
@@ -413,20 +381,6 @@ dependencies:
     - esp32c61
     - esp32s31
     version: 2.3.0
-  espressif/esp_wifi_remote:
-    dependencies:
-    - name: espressif/esp_hosted
-      rules:
-      - if: target in [esp32h2, esp32p4]
-      version: '>=2.11'
-    - name: espressif/wifi_remote_over_eppp
-      version: '>=0.1'
-    - name: idf
-      version: '>=5.3'
-    source:
-      path: D:\works\esp-who-master\examples\human_face_recognition\managed_components\espressif__esp_wifi_remote
-      type: local
-    version: 1.6.1
   espressif/feat_database:
     dependencies:
     - name: idf
@@ -492,20 +446,6 @@ dependencies:
     - esp32s31
     - linux
     version: 2.5.1
-  espressif/wifi_remote_over_eppp:
-    component_hash: 06d8bc15348bbd21f1390daace36ed5adcf6026c93c5b69decc55fa04df2711a
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.3'
-    - name: espressif/eppp_link
-      registry_url: https://components.espressif.com
-      require: private
-      version: '>=0.1'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 0.3.2
   idf:
     source:
       type: idf
@@ -523,18 +463,16 @@ direct_dependencies:
 - espressif/esp-sr
 - espressif/esp32_p4_function_ev_board
 - espressif/esp_codec_dev
-- espressif/esp_hosted
 - espressif/esp_lcd_ek79007
 - espressif/esp_lcd_touch_gt911
 - espressif/esp_lvgl_port
 - espressif/esp_video
-- espressif/esp_wifi_remote
 - espressif/feat_database
 - espressif/human_face_recognition
 - espressif/speaker_verification
 - espressif/usb_host_uvc
 - idf
 - lvgl/lvgl
-manifest_hash: 6dfc4e8a7de6e83b6eb39d6556ed374c68585d233df65be48dc647e44940dac6
+manifest_hash: 7a4786fa0f6bfa049ad312da92eac631172fbedf25e39e433fd40d86cb6eab0b
 target: esp32p4
 version: 2.0.0

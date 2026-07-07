@@ -1,4 +1,5 @@
 #include "event_reporter.hpp"
+#include "uart_bridge.hpp"
 #include <cstring>
 #include <cstdio>
 #include <freertos/FreeRTOS.h>
@@ -44,4 +45,5 @@ void report_event(const char *event, const char *json_fields) {
     ReportTask task;
     snprintf(task.body, sizeof(task.body), "{\"device\":\"esp32-p4\",\"event\":\"%s\",%s}", event, json_fields);
     xQueueSend(s_report_queue, &task, 0);
+    uart_bridge_send(task.body);   // also forward to S3 via UART
 }

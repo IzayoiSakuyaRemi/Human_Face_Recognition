@@ -3,7 +3,9 @@
 #include "who_recognition_app_term.hpp"
 #include "who_spiflash_fatfs.hpp"
 #include "event_reporter.hpp"
-#include "wifi_provisioning.hpp"
+#include "uart_bridge.hpp"
+#include "radar_display.hpp"
+// #include "wifi_provisioning.hpp"  // C5 removed
 #include "driver/gpio.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
@@ -16,10 +18,13 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
-#include "esp_wifi.h"
+// #include "esp_wifi.h"     // C5 removed
 #include "esp_sntp.h"
 #include "esp_netif.h"
+#include "esp_event.h"
+#include "esp_eth.h"
 #include "esp_vfs_fat.h"
+extern "C" { esp_err_t bsp_eth_init(void); }
 #include "driver/sdspi_host.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "sdmmc_cmd.h"
@@ -52,7 +57,8 @@ using namespace who::frame_cap;
 using namespace who::app;
 
 EventGroupHandle_t g_recog_event_group = nullptr;
-static esp_codec_dev_handle_t g_mic_handle = nullptr;
+esp_codec_dev_handle_t g_mic_handle = nullptr;
+esp_codec_dev_handle_t g_speaker_handle = nullptr;  // for xiaozhi audio bridge
 static SemaphoreHandle_t g_espdl_mutex = nullptr;
 static volatile int g_skip_detect_count = 0;
 
@@ -145,6 +151,8 @@ static void voice_recognition_task(void *arg)
     int64_t last_log = 0;
     int read_count = 0;
     while (g_mic_handle) {
+        if (g_voice_paused) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+
         // esp_codec_dev_read returns ESP_CODEC_DEV_OK (0) on success,
         // NOT the number of bytes read! The actual data is in audio_buf.
         int ret = esp_codec_dev_read(g_mic_handle, audio_buf, read_bytes);
@@ -156,8 +164,6 @@ static void voice_recognition_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-
-        if (g_voice_paused) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
 
         if (now - last_log > 1000000) {
             int nz = 0;
@@ -476,8 +482,17 @@ extern "C" void app_main(void)
     // ====================================================================
     // Phase 2: Init event loop (needed by esp-who components)
     // ====================================================================
-    esp_netif_init();
+    // esp_netif_init();  // C5 removed
     esp_event_loop_create_default();
+
+    // ── Ethernet (IP101, RMII, pins 31/52/51) ──
+    ESP_ERROR_CHECK(bsp_eth_init());
+    ESP_LOGI(TAG, "Ethernet init successfully");
+
+    // ── UART bridge to S3 (GPIO4/5, 921600 baud) ──
+    uart_bridge_init();
+    // ── Radar status from S3 via UART → LVGL display (task waits for LVGL) ──
+    radar_display_init();
 
     // ====================================================================
     // Phase 3: Filesystem + Camera + Audio + Recognition (WiFi later on click)
@@ -504,6 +519,7 @@ extern "C" void app_main(void)
         };
         ESP_ERROR_CHECK(bsp_audio_init(&audio_cfg));
         esp_codec_dev_handle_t speaker = bsp_audio_codec_speaker_init();
+        g_speaker_handle = speaker;
         g_mic_handle = bsp_audio_codec_microphone_init();
 
         esp_codec_dev_sample_info_t fs = {
@@ -513,6 +529,7 @@ extern "C" void app_main(void)
         esp_codec_dev_open(speaker, &fs);
         esp_codec_dev_open(g_mic_handle, &fs);
         esp_codec_dev_set_in_gain(g_mic_handle, 40.0);
+        esp_codec_dev_set_out_vol(speaker, 70);  // set speaker volume (matches xiaozhi-esp32)
         ESP_LOGI(TAG, "Audio: BSP init complete");
     }
 
@@ -715,25 +732,28 @@ extern "C" void app_main(void)
         // Clock update timer
         lv_timer_create(on_clock_update_cb, 1000, g_phone);
 
-        // WiFi status bar update + SNTP time sync timer
+        // Ethernet status bar + SNTP time sync
+        static bool s_eth_sntp_started = false;
         lv_timer_create([](lv_timer_t *t) {
             auto *phone = (ESP_Brookesia_Phone *)t->user_data;
-            if (wifi_is_connected()) {
-                phone->getHome().getStatusBar()->setWifiIconState(3);
-                // Start SNTP sync once (idempotent after first call)
-                static bool sntp_started = false;
-                if (!sntp_started) {
+            esp_netif_t *eth = esp_netif_get_handle_from_ifkey("ETH");
+            bool up = (eth && esp_netif_is_netif_up(eth));
+            if (up) {
+                phone->getHome().getStatusBar()->setWifiIconState(3); // reuse WiFi icon for ETH
+                if (!s_eth_sntp_started) {
+                    s_eth_sntp_started = true;
                     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-                    esp_sntp_setservername(0, (char *)"pool.ntp.org");
+                    esp_sntp_setservername(0, (char *)"ntp.aliyun.com");
+                    esp_sntp_setservername(1, (char *)"pool.ntp.org");
                     esp_sntp_init();
-                    setenv("TZ", "CST-8", 1);
-                    tzset();
-                    sntp_started = true;
+                    setenv("TZ", "CST-8", 1); tzset();
+                    ESP_LOGI(TAG, "SNTP started over Ethernet");
                 }
             } else {
                 phone->getHome().getStatusBar()->setWifiIconState(0);
+                s_eth_sntp_started = false;
             }
-        }, 5000, g_phone);
+        }, 3000, g_phone);
 
         bsp_display_unlock();
     }

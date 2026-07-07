@@ -1,3 +1,5 @@
+#if 0  // C5 removed — entire WiFi provisioning disabled
+
 #include "wifi_provisioning.hpp"
 #include <cstring>
 #include <cstdio>
@@ -445,3 +447,5 @@ static void prov_task(void *arg) {
 void wifi_provisioning_start_async(wifi_prov_status_cb_t status_cb) {
     xTaskCreate(prov_task, "wifi_prov", 6144, (void*)status_cb, 5, NULL);
 }
+
+#endif  // C5 removed

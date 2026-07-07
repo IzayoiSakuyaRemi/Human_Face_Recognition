@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "uart_bridge.hpp"
 #include "xiaozhi/uart_frame_protocol.h"
+#include "xiaozhi_audio_bridge.hpp"
 
 static const char *TAG = "FaceApp";
 static bool s_xiaozhi_mode = false;
@@ -105,10 +106,12 @@ bool FaceRecognitionApp::run()
                 g_voice_paused = true;
                 uint8_t f[4] = {UART_FRAME_CTRL, CTRL_ENTER_XIAOZHI, 0, 0};
                 uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
+                xiaozhi_audio_bridge_start();  // start mic→S3, register PCM_DOWN→speaker
                 ESP_LOGI(TAG, "Switched to XIAOZHI mode");
                 lv_label_set_text(lv_obj_get_child(btn_target, 0), "Guard");
                 lv_obj_set_style_bg_color(btn_target, lv_color_hex(0x0f6040), LV_PART_MAIN);
             } else {
+                xiaozhi_audio_bridge_stop();   // stop mic task, unregister PCM_DOWN
                 uint8_t f[4] = {UART_FRAME_CTRL, CTRL_EXIT_XIAOZHI, 0, 0};
                 uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
                 if (g_recognition_app) g_recognition_app->resume();
