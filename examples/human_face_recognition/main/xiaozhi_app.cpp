@@ -90,23 +90,14 @@ bool XiaoZhiApp::run()
     lv_obj_set_style_text_color(m_status_label, lv_color_hex(0x88AAFF), LV_PART_MAIN);
     lv_obj_align(m_status_label, LV_ALIGN_TOP_MID, 0, 40);
 
-    /* ── STT area (user speech) ─────────────── */
-    m_stt_label = lv_label_create(scr);
-    lv_label_set_text(m_stt_label, "");
-    lv_obj_set_style_text_color(m_stt_label, lv_color_hex(0x88FF88), LV_PART_MAIN);
-    lv_obj_set_style_text_font(m_stt_label, &lv_font_simsun_16_cjk, LV_PART_MAIN);
-    lv_obj_set_width(m_stt_label, lv_pct(90));
-    lv_label_set_long_mode(m_stt_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(m_stt_label, LV_ALIGN_TOP_LEFT, 20, 70);
-
-    /* ── TTS area (assistant reply) ─────────── */
+    /* ── TTS area (xiaozhi reply) ──────────── */
     m_tts_label = lv_label_create(scr);
     lv_label_set_text(m_tts_label, "");
     lv_obj_set_style_text_color(m_tts_label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_tts_label, &lv_font_simsun_16_cjk, LV_PART_MAIN);
     lv_obj_set_width(m_tts_label, lv_pct(90));
     lv_label_set_long_mode(m_tts_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(m_tts_label, LV_ALIGN_TOP_LEFT, 20, 130);
+    lv_obj_align(m_tts_label, LV_ALIGN_CENTER, 0, -20);
 
     /* ── Emotion area ───────────────────────── */
     m_emotion_label = lv_label_create(scr);
@@ -259,9 +250,9 @@ void XiaoZhiApp::process_messages()
     int msg_count = 0;
     while (xQueueReceive(m_msg_queue, &msg, 0) == pdTRUE && msg_count++ < 8) {
         if (strcmp(msg.type, "stt") == 0) {
-            lv_label_set_text(m_stt_label, msg.text);
             lv_label_set_text(m_status_label, "Listening...");
         } else if (strcmp(msg.type, "tts") == 0) {
+            // Show only latest xiaozhi reply (replace, not accumulate)
             lv_label_set_text(m_tts_label, msg.text);
             lv_label_set_text(m_status_label, "Speaking...");
         } else if (strcmp(msg.type, "emotion") == 0) {
