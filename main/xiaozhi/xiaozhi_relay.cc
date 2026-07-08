@@ -38,12 +38,16 @@ static const char *TAG = "xz_relay";
 /* ── Forward xiaozhi status to P4 via UART JSON ── */
 static void xz_send_to_p4(const char *xz_type, const char *key, const char *value)
 {
+    if (!g_active || !xz_type || !key || !value) return;
     char buf[512];
     int len = snprintf(buf, sizeof(buf),
         "{\"dev\":\"s3\",\"xz\":{\"type\":\"%s\",\"%s\":\"%s\"}}\n",
         xz_type, key, value);
     if (len > 0 && len < (int)sizeof(buf)) {
-        uart_write_bytes(UART_NUM_1, buf, len);
+        int sent = uart_write_bytes(UART_NUM_1, buf, len);
+        if (sent != len) {
+            ESP_LOGW(TAG, "xz_send_to_p4: short write %d/%d", sent, len);
+        }
     }
 }
 

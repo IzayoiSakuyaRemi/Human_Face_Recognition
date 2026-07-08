@@ -263,6 +263,13 @@ static void uart_frame_demux_task(void *arg)
                     }
                     bin_expected = 6 + (size_t)sc * 2 + 2;
                 }
+                // Defense-in-depth: cap bin_expected to buffer size
+                if (bin_expected > sizeof(bin_buf)) {
+                    ESP_LOGW(TAG, "Frame too large (%d > %d), discarding",
+                             (int)bin_expected, (int)sizeof(bin_buf));
+                    in_binary = false;
+                    continue;
+                }
 
                 if (bin_pos >= bin_expected) {
                     /* Dispatch */
