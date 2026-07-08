@@ -181,7 +181,7 @@ void xiaozhi_audio_bridge_start(void)
     // Speaker queue + task: offloads I2S TX from UART callback
     s_spk_queue = xQueueCreate(SPK_QUEUE_LEN, PCM_BYTES);
     if (s_spk_queue) {
-        xTaskCreatePinnedToCore(speaker_task, "xz_spk", 4096, NULL, 2,
+        xTaskCreatePinnedToCore(speaker_task, "xz_spk", 4096, NULL, 3,
                                 &s_spk_task, 1);
     }
 
