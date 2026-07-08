@@ -32,6 +32,10 @@ static const char *EMOJI_FILES[EMOJI_COUNT] = {
     "/sdcard/xz/neutral.rgb565",
 };
 
+static const char *EMOJI_NAMES[EMOJI_COUNT] = {
+    "silly", "angry", "shocked1", "neutral"
+};
+
 static lv_image_dsc_t *s_dsc[EMOJI_COUNT]   = {};
 static void          *s_pixels[EMOJI_COUNT] = {};
 
@@ -118,9 +122,10 @@ const lv_image_dsc_t *xz_emoji_get(const char *emotion_str)
 
     int slot;
 
-    // Positive: happy, funny, confident, laughing, cool, loving, winking
+    // Positive: happy, funny, confident, laughing
     if (strcmp(emotion_str, "happy") == 0 || strcmp(emotion_str, "funny") == 0
-     || strcmp(emotion_str, "confident") == 0)
+     || strcmp(emotion_str, "confident") == 0
+     || strcmp(emotion_str, "laughing") == 0)
         slot = SLOT_POSITIVE;
 
     // Angry
@@ -146,5 +151,6 @@ const lv_image_dsc_t *xz_emoji_get(const char *emotion_str)
     if (!s_dsc[slot]) slot = SLOT_NEUTRAL;
     if (!s_dsc[slot]) return nullptr;
 
+    ESP_LOGI(TAG, "'%s' -> %s", emotion_str, EMOJI_NAMES[slot]);
     return s_dsc[slot];
 }

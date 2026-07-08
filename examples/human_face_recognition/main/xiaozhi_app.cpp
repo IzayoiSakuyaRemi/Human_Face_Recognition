@@ -276,11 +276,16 @@ void XiaoZhiApp::process_messages()
             lv_label_set_text(m_tts_label, msg.text);
             lv_label_set_text(m_status_label, "Speaking...");
         } else if (strcmp(msg.type, "emotion") == 0) {
+            ESP_LOGI(TAG, "emoji switch: '%s'", msg.text);
             const lv_image_dsc_t *dsc = xz_emoji_get(msg.text);
             if (dsc && m_emoji_img) {
                 lv_image_set_src(m_emoji_img, dsc);
                 float sf = 280.0f / (float)dsc->header.h;
                 lv_image_set_scale(m_emoji_img, (uint16_t)(sf * 256.0f));
+                ESP_LOGI(TAG, "emoji set: %dx%d scale=%.2f",
+                         (int)dsc->header.w, (int)dsc->header.h, (double)sf);
+            } else {
+                ESP_LOGW(TAG, "emoji failed: dsc=%p img=%p", (void*)dsc, (void*)m_emoji_img);
             }
             char buf[64];
             snprintf(buf, sizeof(buf), "%.63s", msg.text);
