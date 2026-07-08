@@ -5,6 +5,7 @@
 
 #include "xiaozhi_app.hpp"
 #include "xiaozhi_audio_bridge.hpp"
+#include "xiaozhi_emoji.hpp"
 #include "uart_bridge.hpp"
 #include "xiaozhi/uart_frame_protocol.h"
 #include "esp_log.h"
@@ -90,6 +91,22 @@ bool XiaoZhiApp::run()
     lv_obj_set_style_text_color(m_status_label, lv_color_hex(0x88AAFF), LV_PART_MAIN);
     lv_obj_align(m_status_label, LV_ALIGN_TOP_MID, 0, 40);
 
+    /* ── Emoji image (centered, scaled to fit) ── */
+    m_emoji_img = lv_image_create(scr);
+    lv_obj_set_style_bg_opa(m_emoji_img, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_align(m_emoji_img, LV_ALIGN_CENTER, 0, 20);
+
+    // Preload all 4 emoji images from SD card
+    xz_emoji_init();
+
+    // Set initial neutral emoji
+    const lv_image_dsc_t *init_dsc = xz_emoji_get("neutral");
+    if (init_dsc) {
+        lv_image_set_src(m_emoji_img, init_dsc);
+        float sf = 280.0f / (float)init_dsc->header.h;  // scale to 280px height
+        lv_image_set_scale(m_emoji_img, (uint16_t)(sf * 256.0f));
+    }
+
     /* ── TTS area (xiaozhi reply) ──────────── */
     m_tts_label = lv_label_create(scr);
     lv_label_set_text(m_tts_label, "");
@@ -97,14 +114,14 @@ bool XiaoZhiApp::run()
     lv_obj_set_style_text_font(m_tts_label, &lv_font_simsun_16_cjk, LV_PART_MAIN);
     lv_obj_set_width(m_tts_label, lv_pct(90));
     lv_label_set_long_mode(m_tts_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(m_tts_label, LV_ALIGN_CENTER, 0, -20);
+    lv_obj_align(m_tts_label, LV_ALIGN_BOTTOM_MID, 0, -60);
 
-    /* ── Emotion area ───────────────────────── */
+    /* ── Emotion text label ─────────────────── */
     m_emotion_label = lv_label_create(scr);
     lv_label_set_text(m_emotion_label, "");
     lv_obj_set_style_text_color(m_emotion_label, lv_color_hex(0xFFAA44), LV_PART_MAIN);
     lv_obj_set_style_text_font(m_emotion_label, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_align(m_emotion_label, LV_ALIGN_BOTTOM_LEFT, 20, -80);
+    lv_obj_align(m_emotion_label, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     /* ── Exit button ────────────────────────── */
     m_exit_btn = lv_button_create(scr);
@@ -160,6 +177,9 @@ bool XiaoZhiApp::back()
 bool XiaoZhiApp::close()
 {
     ESP_LOGI(TAG, "XiaoZhi app closing...");
+
+    /* ── Free emoji images ───────────────────── */
+    xz_emoji_deinit();
 
     /* ── Stop LVGL timer ────────────────────── */
     if (m_timer) {
@@ -256,6 +276,12 @@ void XiaoZhiApp::process_messages()
             lv_label_set_text(m_tts_label, msg.text);
             lv_label_set_text(m_status_label, "Speaking...");
         } else if (strcmp(msg.type, "emotion") == 0) {
+            const lv_image_dsc_t *dsc = xz_emoji_get(msg.text);
+            if (dsc && m_emoji_img) {
+                lv_image_set_src(m_emoji_img, dsc);
+                float sf = 280.0f / (float)dsc->header.h;
+                lv_image_set_scale(m_emoji_img, (uint16_t)(sf * 256.0f));
+            }
             char buf[64];
             snprintf(buf, sizeof(buf), "%.63s", msg.text);
             lv_label_set_text(m_emotion_label, buf);
