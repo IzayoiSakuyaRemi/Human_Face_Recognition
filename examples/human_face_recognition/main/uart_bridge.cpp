@@ -92,10 +92,18 @@ static void uart_rx_task(void *arg)
     static size_t bin_pos = 0;
     static uint8_t bin_buf[2048];
 
+    // Pre-validation: PCM audio data contains 0x03 bytes that trigger false
+    // binary frame detection.  Buffer 6 bytes before committing to binary mode,
+    // validate sample_count==960 to reject false positives.
+    static bool    pcm_peeking = false;
+    static uint8_t pcm_peek[6];
+    static int     pcm_peek_pos = 0;
+
     if (!data) { vTaskDelete(NULL); return; }
 
     uint32_t loop_count = 0;
     uint32_t pcm_down_count = 0;
+    uint32_t false_hdr_count = 0;
     TickType_t last_hwm_report = xTaskGetTickCount();
 
     ESP_LOGI(TAG, "RX task start: data=%p (heap) stack_hwm=%lu",
@@ -110,11 +118,50 @@ static void uart_rx_task(void *arg)
         for (int i = 0; i < rx; i++) {
             uint8_t byte = data[i];
 
+            /* ── PCM_DOWN pre-validation: buffer 6-byte header ── */
+            if (!in_binary && pcm_peeking) {
+                pcm_peek[pcm_peek_pos++] = byte;
+                if (pcm_peek_pos >= 6) {
+                    pcm_peeking = false;
+                    uint16_t sc = (uint16_t)pcm_peek[4] | ((uint16_t)pcm_peek[5] << 8);
+                    if (sc == 960) {
+                        // Valid PCM_DOWN header — enter binary mode pre-filled
+                        in_binary = true;
+                        bin_pos = 6;
+                        memcpy(bin_buf, pcm_peek, 6);
+                        bin_expected = 6 + 960 * 2 + 2;
+                    } else {
+                        // False positive — 0x03 was audio data, not a header
+                        false_hdr_count++;
+                        // Feed peeked bytes through text handler (they're harmless)
+                        for (int j = 0; j < 6; j++) {
+                            char tc = (char)pcm_peek[j];
+                            if (tc == '\n' || tc == '\r') {
+                                if (line_pos > 0) { line[line_pos]=0;
+                                    for (int c=0;c<s_json_cb_count;c++) s_json_cbs[c](line);
+                                    line_pos=0; }
+                            } else if (line_pos < (int)sizeof(line)-1) {
+                                line[line_pos++] = tc;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
             /* ── Binary frame detection ── */
             if (!in_binary && (byte == UART_FRAME_PCM_DOWN ||
                                byte == UART_FRAME_CTRL ||
                                byte == UART_FRAME_ADR018)) {
-                /* Flush any pending line */
+                // PCM_DOWN: pre-validate header before committing (audio data
+                // contains 0x03 bytes that would otherwise trigger false frames)
+                if (byte == UART_FRAME_PCM_DOWN) {
+                    pcm_peeking = true;
+                    pcm_peek_pos = 0;
+                    pcm_peek[pcm_peek_pos++] = byte;
+                    continue;
+                }
+                // CTRL and ADR018 enter binary mode immediately (low false-positive rate)
                 if (line_pos > 0 && line[0] == '{') {
                     line[line_pos] = 0;
                     for (int c = 0; c < s_json_cb_count; c++)
@@ -122,9 +169,9 @@ static void uart_rx_task(void *arg)
                 }
                 line_pos = 0;
                 in_binary = true;
-                bin_pos = 1;          // bin_buf[0] already set below
-                bin_buf[0] = byte;    // frame type byte at index 0
-                bin_expected = 2048;  // will be refined when header is parsed
+                bin_pos = 1;
+                bin_buf[0] = byte;
+                bin_expected = 2048;
                 continue;
             }
 
@@ -205,8 +252,8 @@ static void uart_rx_task(void *arg)
         // Periodic health report every 10 seconds
         TickType_t now = xTaskGetTickCount();
         if (now - last_hwm_report >= pdMS_TO_TICKS(10000)) {
-            ESP_LOGI(TAG, "📊 RX health: loops=%lu pcm_down=%lu hwm=%lu",
-                     loop_count, pcm_down_count,
+            ESP_LOGI(TAG, "RX health: loops=%lu pcm_down=%lu false_hdr=%lu hwm=%lu",
+                     loop_count, pcm_down_count, false_hdr_count,
                      uxTaskGetStackHighWaterMark(NULL));
             last_hwm_report = now;
         }
