@@ -253,7 +253,8 @@ void XiaoZhiApp::timer_cb(lv_timer_t *timer)
 void XiaoZhiApp::process_messages()
 {
     xz_msg_t msg;
-    while (xQueueReceive(m_msg_queue, &msg, 0) == pdTRUE) {
+    int msg_count = 0;
+    while (xQueueReceive(m_msg_queue, &msg, 0) == pdTRUE && msg_count++ < 8) {
         if (strcmp(msg.type, "stt") == 0) {
             char buf[320];
             snprintf(buf, sizeof(buf), "You: %.250s", msg.text);
@@ -262,10 +263,10 @@ void XiaoZhiApp::process_messages()
             lv_label_set_text(m_status_label, "Listening...");
 
         } else if (strcmp(msg.type, "tts") == 0) {
-            // Accumulate TTS sentences
+            // Accumulate TTS sentences; reset if buffer would overflow
             const char *prev = lv_label_get_text(m_tts_label);
             char buf[600];
-            if (prev && prev[0]) {
+            if (prev && prev[0] && strlen(prev) < 400) {
                 snprintf(buf, sizeof(buf), "%s\n%.250s", prev, msg.text);
             } else {
                 snprintf(buf, sizeof(buf), "XiaoZhi: %.250s", msg.text);

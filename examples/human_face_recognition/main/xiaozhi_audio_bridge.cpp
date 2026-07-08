@@ -61,9 +61,10 @@ static void on_pcm_down_frame(uint8_t type, const uint8_t *data, size_t len)
              (unsigned)hdr.seq, (unsigned)count, (void *)g_speaker_handle);
 
     if (g_speaker_handle && count > 0 && s_i2s_mutex) {
-        xSemaphoreTake(s_i2s_mutex, portMAX_DELAY);
-        esp_codec_dev_write(g_speaker_handle, (void *)pcm, count * sizeof(int16_t));
-        xSemaphoreGive(s_i2s_mutex);
+        if (xSemaphoreTake(s_i2s_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+            esp_codec_dev_write(g_speaker_handle, (void *)pcm, count * sizeof(int16_t));
+            xSemaphoreGive(s_i2s_mutex);
+        }
     }
 }
 
@@ -141,7 +142,8 @@ static void mic_capture_task(void *arg)
         cycle_ok++;
 
         // ── Drain frames from ring while ≥ 960 samples available ──
-        while (avail >= SAMPLES_PER_FRAME) {
+        int drain_iter = 0;
+        while (avail >= SAMPLES_PER_FRAME && drain_iter++ < 16) {
             ring_read(ring, &rpos, &avail, frame_buf, SAMPLES_PER_FRAME);
 
             size_t flen = uart_frame_build_pcm(
