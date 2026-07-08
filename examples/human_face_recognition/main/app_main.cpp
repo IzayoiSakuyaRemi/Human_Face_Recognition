@@ -70,6 +70,7 @@ static volatile int g_skip_detect_count = 0;
 static SpeakerVerification *g_speaker_verifier = nullptr;
 static dl::feat::FeatVerificationDatabase *g_voice_db = nullptr;
 bool g_voice_enrolling = false;
+bool g_voice_enroll_allowed = false;  // gate: only when Settings enables it
 bool g_voice_verifying = false;
 static int g_voice_collect_samples = 0;
 static int16_t *g_voice_cap_buf = nullptr;   // captured audio for verification
@@ -386,6 +387,10 @@ static void voice_recognition_task(void *arg)
 
                 // Voice enrollment / verification commands
                 if (cmd_id == 6 && g_speaker_verifier && g_voice_cap_buf) {
+                    if (!g_voice_enroll_allowed) {
+                        if (g_recognition_app) g_recognition_app->set_exec_text("Enroll disabled");
+                        return;
+                    }
                     g_voice_enrolling = true;
                     g_voice_verifying = false;
                     g_voice_collect_samples = 0;
@@ -763,26 +768,18 @@ extern "C" void app_main(void)
         // Clock update timer
         lv_timer_create(on_clock_update_cb, 1000, g_phone);
 
-        // Ethernet status bar + SNTP time sync
+        // SNTP time sync over Ethernet (WiFi icon driven by S3 status)
         static bool s_eth_sntp_started = false;
         lv_timer_create([](lv_timer_t *t) {
-            auto *phone = (ESP_Brookesia_Phone *)t->user_data;
             esp_netif_t *eth = esp_netif_get_handle_from_ifkey("ETH");
-            bool up = (eth && esp_netif_is_netif_up(eth));
-            if (up) {
-                phone->getHome().getStatusBar()->setWifiIconState(3); // reuse WiFi icon for ETH
-                if (!s_eth_sntp_started) {
-                    s_eth_sntp_started = true;
-                    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-                    esp_sntp_setservername(0, (char *)"ntp.aliyun.com");
-                    esp_sntp_setservername(1, (char *)"pool.ntp.org");
-                    esp_sntp_init();
-                    setenv("TZ", "CST-8", 1); tzset();
-                    ESP_LOGI(TAG, "SNTP started over Ethernet");
-                }
-            } else {
-                phone->getHome().getStatusBar()->setWifiIconState(0);
-                s_eth_sntp_started = false;
+            if (eth && esp_netif_is_netif_up(eth) && !s_eth_sntp_started) {
+                s_eth_sntp_started = true;
+                esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+                esp_sntp_setservername(0, (char *)"ntp.aliyun.com");
+                esp_sntp_setservername(1, (char *)"pool.ntp.org");
+                esp_sntp_init();
+                setenv("TZ", "CST-8", 1); tzset();
+                ESP_LOGI(TAG, "SNTP started over Ethernet");
             }
         }, 3000, g_phone);
 

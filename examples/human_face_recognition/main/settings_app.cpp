@@ -174,6 +174,16 @@ void SettingsApp::create_main_page()
     lv_obj_add_event_cb(btn5, [](lv_event_t *e) {
         ((SettingsApp *)lv_event_get_user_data(e))->create_radar_page();
     }, LV_EVENT_CLICKED, this);
+
+    // Voice Enroll toggle
+    extern bool g_voice_enroll_allowed;
+    auto *btn6 = menu_row_create(m_main_page, "Voice Enroll: OFF", 420);
+    lv_obj_add_event_cb(btn6, [](lv_event_t *e) {
+        lv_obj_t *btn = lv_event_get_target_obj(e);
+        g_voice_enroll_allowed = !g_voice_enroll_allowed;
+        lv_label_set_text(lv_obj_get_child(btn, 0),
+            g_voice_enroll_allowed ? "Voice Enroll: ON" : "Voice Enroll: OFF");
+    }, LV_EVENT_CLICKED, this);
 }
 
 // ============================================================
