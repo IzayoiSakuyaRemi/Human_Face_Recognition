@@ -167,9 +167,17 @@ static void voice_recognition_task(void *arg)
             continue;
         }
         if (was_paused) {
-            ESP_LOGI(TAG, "🎙 Voice task RESUMED, hwm=%lu",
+            ESP_LOGI(TAG, "Voice task RESUMED, hwm=%lu",
                      uxTaskGetStackHighWaterMark(NULL));
             was_paused = false;
+            // Reset MultiNet and all detection state on resume
+            if (multinet && mn_data) multinet->clean(mn_data);
+            g_skip_detect_count = 0;
+            g_post_detect_samples = 0;
+            g_voice_enrolling = false;
+            g_voice_verifying = false;
+            g_pending_cmd_id = 0;
+            g_face_triggered = false;
         }
 
         // esp_codec_dev_read returns ESP_CODEC_DEV_OK (0) on success,
@@ -192,8 +200,9 @@ static void voice_recognition_task(void *arg)
             last_log = now;
         }
 
-        // ---- Simple AGC: normalize audio volume ----
-        apply_agc(audio_buf, chunksize, 2000.0f);
+        // AGC disabled for MultiNet — per-frame gain destroys amplitude envelope
+        // that the model expects. Speaker verification has its own normalization.
+        // apply_agc(audio_buf, chunksize, 2000.0f);
 
         // ---- Always append to rolling circular buffer ----
         if (g_rolling_buf) {
@@ -427,7 +436,7 @@ static void voice_recognition_task(void *arg)
                     // Commands 1-5, 7: immediate voice + face verification
                     if (g_recog_event_group && cmd_id <= 5) {
                         g_last_recog_face[0] = '\0';     // clear stale face result
-                        g_skip_detect_count = 15;
+                        g_skip_detect_count = 3;  // 3 frames (~90ms) — enough to skip trigger tail
                         xEventGroupSetBits(g_recog_event_group, 32);
                         g_face_triggered = true;          // wait for fresh face result
                     }
@@ -449,7 +458,7 @@ static void voice_recognition_task(void *arg)
                 } else {
                     // No voice users enrolled — fallback to face-only auth
                     if (g_recog_event_group) {
-                        g_skip_detect_count = 15;
+                        g_skip_detect_count = 3;  // 3 frames (~90ms) — enough to skip trigger tail
                         xEventGroupSetBits(g_recog_event_group, 32);
                     }
                     bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
