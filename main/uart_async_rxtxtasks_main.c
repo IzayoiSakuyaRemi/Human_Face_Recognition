@@ -327,7 +327,7 @@ static void uart_frame_demux_task(void *arg)
                     if (tpos > 0 && tline[0] == '{') {
                         tline[tpos] = 0;
                         // Forward P4 events to HTTP server
-                        if (strstr(tline, "\"dev\":\"p4\"")) {
+                        if (strstr(tline, "\"device\":\"p4-voice\"")) {
                             report_p4_event(tline);
                         }
                     }
