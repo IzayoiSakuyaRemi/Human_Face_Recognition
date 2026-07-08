@@ -30,8 +30,6 @@ private:
     void process_messages();
 
     lv_obj_t *m_title_label   = nullptr;
-    lv_obj_t *m_stt_label     = nullptr;   // "You said: ..."
-    lv_obj_t *m_tts_label     = nullptr;   // "XiaoZhi: ..."
     lv_obj_t *m_emotion_label = nullptr;   // "Emotion: happy"
     lv_obj_t *m_status_label  = nullptr;   // connection status
     lv_obj_t *m_exit_btn      = nullptr;
