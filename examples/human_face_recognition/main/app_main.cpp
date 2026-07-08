@@ -49,6 +49,7 @@ bool g_voice_paused = true;  // paused until Camera App opens
 
 // Brookesia globals
 ESP_Brookesia_Phone *g_phone = nullptr;
+volatile int g_wifi_icon_state = 0;  // updated by uart_rx_task, applied by clock timer
 // Dynamic wallpaper tracking (for cleanup on switch)
 // Non-static so SettingsApp can free boot-time allocation
 lv_image_dsc_t *g_active_wp_dsc = nullptr;
@@ -485,6 +486,13 @@ static void on_clock_update_cb(lv_timer_t *timer)
     localtime_r(&now, &timeinfo);
     auto *phone = (ESP_Brookesia_Phone *)timer->user_data;
     phone->getHome().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
+
+    // Apply WiFi icon state set by uart_rx_task (from S3)
+    static int last_wifi = -1;
+    if (g_wifi_icon_state != last_wifi) {
+        last_wifi = g_wifi_icon_state;
+        phone->getHome().getStatusBar()->setWifiIconState(last_wifi);
+    }
 }
 
 extern "C" void app_main(void)
