@@ -848,16 +848,6 @@ extern "C" void app_main(void)
                  g_embedding_dim);
     }
 
-    // Heartbeat timer: report online every 60s
-    esp_timer_handle_t hb_timer = nullptr;
-    esp_timer_create_args_t hb_args = {
-        .callback = [](void*) { report_event("heartbeat", "\"uptime\":0"); },
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "heartbeat"
-    };
-    esp_timer_create(&hb_args, &hb_timer);
-    esp_timer_start_periodic(hb_timer, 60000000);  // 60s
-
     if (voice_params.multinet) {
         voice_task_params_t *p = (voice_task_params_t *)malloc(sizeof(voice_task_params_t));
         if (p) {

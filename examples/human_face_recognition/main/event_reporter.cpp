@@ -7,7 +7,7 @@
  */
 #include "event_reporter.hpp"
 #include "uart_bridge.hpp"
-#include <cstdio>
+#include <stdio.h>
 
 void report_event(const char *event, const char *json_fields)
 {
