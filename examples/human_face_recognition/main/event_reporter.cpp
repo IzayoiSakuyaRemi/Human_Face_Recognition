@@ -15,7 +15,7 @@ void report_event(const char *event, const char *json_fields)
 {
     char buf[256];
     int len = snprintf(buf, sizeof(buf),
-        "{\"dev\":\"p4-voice\",\"event\":\"%s\",%s}\n",
+        "{\"device\":\"p4-voice\",\"event\":\"%s\",%s}\n",
         event, json_fields);
     if (len > 0 && len < (int)sizeof(buf)) {
         uart_write_bytes(UART_PORT, buf, len);
