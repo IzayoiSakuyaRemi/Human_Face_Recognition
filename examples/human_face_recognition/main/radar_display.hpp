@@ -1,21 +1,19 @@
 #pragma once
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * Initialize radar display: creates LVGL timer to poll radar data from UART.
- * Shows radar status on camera overlay (set_status_text) when camera app is active.
- */
 void radar_display_init(void);
-
-/**
- * Called by uart_bridge RX task to push parsed S3 radar data.
- * Thread-safe (FreeRTOS queue).
- */
 void radar_display_push(const char *room, const char *move,
                          float wander, float jitter);
+
+/** Check if screen is currently on (for touch wake-up). */
+bool radar_display_is_screen_on(void);
+
+/** Force screen on (for touch wake-up). */
+void radar_display_wake_screen(void);
 
 #ifdef __cplusplus
 }
