@@ -4,8 +4,10 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
-#include "bsp/display.h"
 #include "lvgl.h"
+#include "driver/gpio.h"
+
+#define BSP_LCD_BACKLIGHT GPIO_NUM_20
 #include <cstdio>
 #include <cstring>
 
@@ -18,7 +20,7 @@ static QueueHandle_t s_radar_queue = NULL;
 /* ── Screen sleep/wake state ───────────────── */
 static bool s_screen_on = true;
 static TickType_t s_last_moving = 0;
-static const int IDLE_TIMEOUT_S = 30;
+static const int IDLE_TIMEOUT_S = 15;
 
 /* Called by uart_bridge to push parsed radar data */
 void radar_display_push(const char *room, const char *move,
@@ -37,7 +39,17 @@ void radar_display_push(const char *room, const char *move,
 static void radar_display_task(void *arg)
 {
     vTaskDelay(pdMS_TO_TICKS(5000));
-    s_last_moving = xTaskGetTickCount();  // init timer after boot
+    s_last_moving = xTaskGetTickCount();
+
+    // Take over GPIO 20 for direct backlight control
+    gpio_config_t bk_cfg = { .pin_bit_mask = BIT64(BSP_LCD_BACKLIGHT),
+                             .mode = GPIO_MODE_OUTPUT,
+                             .pull_up_en = GPIO_PULLUP_DISABLE,
+                             .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                             .intr_type = GPIO_INTR_DISABLE };
+    gpio_config(&bk_cfg);
+    gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+
     ESP_LOGI(TAG, "Radar display task started (screen timeout=%ds)", IDLE_TIMEOUT_S);
 
     extern who::app::WhoRecognitionAppLCD *g_recognition_app;
@@ -58,7 +70,7 @@ static void radar_display_task(void *arg)
             if (strstr(msg.move, "MOVING")) {
                 s_last_moving = xTaskGetTickCount();
                 if (!s_screen_on) {
-                    bsp_display_backlight_on();
+                    gpio_set_level(BSP_LCD_BACKLIGHT, 1);
                     s_screen_on = true;
                     ESP_LOGI(TAG, "Screen ON (movement detected)");
                 }
@@ -73,7 +85,7 @@ static void radar_display_task(void *arg)
 
             TickType_t elapsed = xTaskGetTickCount() - s_last_moving;
             if (elapsed > pdMS_TO_TICKS(IDLE_TIMEOUT_S * 1000)) {
-                bsp_display_backlight_off();
+                gpio_set_level(BSP_LCD_BACKLIGHT, 0);
                 s_screen_on = false;
                 ESP_LOGI(TAG, "Screen OFF (idle %lus)", (unsigned long)(elapsed * portTICK_PERIOD_MS / 1000));
             }
@@ -81,7 +93,7 @@ static void radar_display_task(void *arg)
             // Wake on touch even without radar movement
             uint32_t touch_idle = lv_display_get_inactive_time(NULL);
             if (touch_idle < 2000) {
-                bsp_display_backlight_on();
+                gpio_set_level(BSP_LCD_BACKLIGHT, 1);
                 s_screen_on = true;
                 s_last_moving = xTaskGetTickCount();
                 ESP_LOGI(TAG, "Screen ON (touch wake)");
@@ -98,7 +110,7 @@ bool radar_display_is_screen_on(void)
 void radar_display_wake_screen(void)
 {
     if (!s_screen_on) {
-        bsp_display_backlight_on();
+        gpio_set_level(BSP_LCD_BACKLIGHT, 1);
         s_screen_on = true;
         s_last_moving = xTaskGetTickCount();
         ESP_LOGI(TAG, "Screen ON (touch wake)");
