@@ -11,6 +11,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_brookesia.hpp"
+#include "bsp/display.h"
 
 static const char *TAG = "uart_brdg";
 
@@ -240,12 +241,17 @@ static void uart_rx_task(void *arg)
                         radar_display_push(room, move, w, j);
                         ESP_LOGI(TAG, "S3 radar: %s/%s w=%.4f j=%.4f", room, move, w, j);
                     }
-                    // S3 WiFi status → update status bar icon
+                    // S3 WiFi status → update status bar icon (with LVGL lock)
                     if (line[0] == '{' && strstr(line, "\"dev\":\"s3\"") && strstr(line, "\"wifi\"")) {
                         extern ESP_Brookesia_Phone *g_phone;
                         if (g_phone) {
-                            int state = strstr(line, "\"connected\"") ? 3 : 0;
-                            g_phone->getHome().getStatusBar()->setWifiIconState(state);
+                            auto *sb = g_phone->getHome().getStatusBar();
+                            if (sb) {
+                                int state = strstr(line, "\"connected\"") ? 3 : 0;
+                                bsp_display_lock(0);
+                                sb->setWifiIconState(state);
+                                bsp_display_unlock();
+                            }
                         }
                     }
                     /* Forward to registered JSON callbacks */
