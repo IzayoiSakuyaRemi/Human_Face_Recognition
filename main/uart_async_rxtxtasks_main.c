@@ -515,10 +515,11 @@ static void wifi_radar_cb(void *ctx, const wifi_radar_info_t *info)
         /* Console summary */
         printf("RADAR #%d  %s/%s  wander=%.4f jitter=%.4f\n", s_count++, rs, ms, info->waveform_wander, info->waveform_jitter);
         /* UART1 → P4 */
-        char js[160];
+        char js[200];
         int n = snprintf(js, sizeof(js),
-            "{\"dev\":\"s3\",\"radar\":{\"room\":\"%s\",\"move\":\"%s\",\"wander\":%.4f,\"jitter\":%.4f}}\n",
-            rs, ms, info->waveform_wander, info->waveform_jitter);
+            "{\"dev\":\"s3\",\"radar\":{\"room\":\"%s\",\"move\":\"%s\",\"wander\":%.4f,\"jitter\":%.4f},\"wifi\":\"%s\"}\n",
+            rs, ms, info->waveform_wander, info->waveform_jitter,
+            g_wifi_connected ? "connected" : "disconnected");
         uart_write_bytes(UART_NUM_1, js, n);
         /* HTTP POST → Flask (only on state change to avoid flooding) */
         if (changed) report_radar_event(room, human, info->waveform_wander, info->waveform_jitter);
