@@ -70,3 +70,42 @@ void report_radar_event(bool room, bool moving, float wander, float jitter)
 
     xQueueSend(s_queue, &msg, 0);
 }
+
+/* Parse P4 event JSON: {"dev":"p4","msg":"EVENT|type|k=v,k=v,..."}
+ * Reformat as: {"device":"p4","event":"type","k":"v",...} and POST. */
+void report_p4_event(const char *json_line)
+{
+    if (!s_queue) return;
+
+    // Extract "msg" field value
+    const char *mp = strstr(json_line, "\"msg\":\"");
+    if (!mp) return;
+    mp += 7;
+
+    // Read msg value until closing quote
+    char raw[REPORT_BODY_MAX];
+    int n = 0;
+    while (*mp && *mp != '"' && n < (int)sizeof(raw) - 1) {
+        if (*mp == '\\' && *(mp+1) == '"') { mp++; continue; }
+        raw[n++] = *mp++;
+    }
+    raw[n] = 0;
+
+    // Parse "EVENT|type|fields"
+    if (strncmp(raw, "EVENT|", 6) != 0) return;
+
+    char evt_type[32] = {};
+    char evt_fields[REPORT_BODY_MAX - 64] = {};
+
+    char *save = NULL;
+    char *tok = strtok_r(raw + 6, "|", &save);
+    if (tok) strncpy(evt_type, tok, sizeof(evt_type) - 1);
+    tok = strtok_r(NULL, "", &save);
+    if (tok) strncpy(evt_fields, tok, sizeof(evt_fields) - 1);
+
+    report_msg_t msg;
+    snprintf(msg.body, sizeof(msg.body),
+        "{\"device\":\"p4\",\"event\":\"%s\",%s}",
+        evt_type, evt_fields);
+    xQueueSend(s_queue, &msg, 0);
+}

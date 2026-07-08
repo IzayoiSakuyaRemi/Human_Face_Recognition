@@ -319,8 +319,23 @@ static void uart_frame_demux_task(void *arg)
                 continue;
             }
 
-            /* Not in binary — byte goes to existing process_serial_rx_pkt */
-            /* (unchanged — the existing serial/console handler still works) */
+            /* ── Text line handling (P4 JSON events forwarded via UART) ── */
+            {
+                static char tline[256];
+                static int tpos = 0;
+                if (byte == '\n' || byte == '\r') {
+                    if (tpos > 0 && tline[0] == '{') {
+                        tline[tpos] = 0;
+                        // Forward P4 events to HTTP server
+                        if (strstr(tline, "\"dev\":\"p4\"")) {
+                            report_p4_event(tline);
+                        }
+                    }
+                    tpos = 0;
+                } else if (tpos < (int)sizeof(tline) - 1) {
+                    tline[tpos++] = (char)byte;
+                }
+            }
         }
     }
 }

@@ -25,4 +25,10 @@ void event_reporter_init(void);
  */
 void report_radar_event(bool room, bool moving, float wander, float jitter);
 
+/**
+ * Forward a P4 event (received via UART JSON) to the HTTP server.
+ * Parses {"dev":"p4","msg":"EVENT|type|fields"} and POSTs to /api/event.
+ */
+void report_p4_event(const char *json_line);
+
 #endif
