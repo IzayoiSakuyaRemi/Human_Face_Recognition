@@ -74,9 +74,9 @@ static void on_pcm_down_frame(uint8_t type, const uint8_t *data, size_t len)
     if (!uart_frame_parse_pcm(data, len, &hdr, &pcm, &count))
         return;
 
-    // Fast enqueue only — no I2S, no ESP_LOGI in UART hot path
+    // Fast enqueue — small timeout to handle transient queue-full
     if (count == SAMPLES_PER_FRAME && s_spk_queue) {
-        xQueueSend(s_spk_queue, pcm, 0);
+        xQueueSend(s_spk_queue, pcm, pdMS_TO_TICKS(5));
     }
 }
 
@@ -181,7 +181,8 @@ void xiaozhi_audio_bridge_start(void)
     // Speaker queue + task: offloads I2S TX from UART callback
     s_spk_queue = xQueueCreate(SPK_QUEUE_LEN, PCM_BYTES);
     if (s_spk_queue) {
-        xTaskCreatePinnedToCore(speaker_task, "xz_spk", 4096, NULL, 3,
+        // prio 4 > mic(3): preempts mic to grab I2S mutex in the ~1ms release window
+        xTaskCreatePinnedToCore(speaker_task, "xz_spk", 4096, NULL, 4,
                                 &s_spk_task, 1);
     }
 
