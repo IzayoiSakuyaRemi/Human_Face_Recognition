@@ -54,10 +54,8 @@ static void speaker_task(void *arg)
     while (s_running) {
         if (xQueueReceive(s_spk_queue, buf, pdMS_TO_TICKS(500)) != pdTRUE)
             continue;
-        if (!g_speaker_handle || !s_i2s_mutex) continue;
-        if (xSemaphoreTake(s_i2s_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (g_speaker_handle) {
             esp_codec_dev_write(g_speaker_handle, buf, PCM_BYTES);
-            xSemaphoreGive(s_i2s_mutex);
         }
     }
     vTaskDelete(NULL);
@@ -127,7 +125,6 @@ static void mic_capture_task(void *arg)
 
     while (s_running && g_mic_handle) {
         bool read_error = false;
-        if (s_i2s_mutex) xSemaphoreTake(s_i2s_mutex, pdMS_TO_TICKS(100));
         for (int r = 0; r < READS_PER_CYCLE; r++) {
             int ret = esp_codec_dev_read(g_mic_handle, read_buf, READ_BYTES);
             if (ret != 0) {
@@ -138,7 +135,6 @@ static void mic_capture_task(void *arg)
             ring_write(ring, &wpos, read_buf, SAMPLES_PER_READ);
             avail += SAMPLES_PER_READ;
         }
-        if (s_i2s_mutex) xSemaphoreGive(s_i2s_mutex);
         if (read_error) continue;
         cycle_ok++;
 
