@@ -6,6 +6,17 @@
 
 static const char *TAG = "FaceApp";
 
+// Right-side ALLOW/ALARM indicator
+static lv_obj_t *s_auth_label = nullptr;
+void face_app_show_auth(const char *text, bool allowed)
+{
+    if (s_auth_label) {
+        lv_label_set_text(s_auth_label, text);
+        lv_color_t c = allowed ? lv_color_hex(0x00FF00) : lv_color_hex(0xFF0000);
+        lv_obj_set_style_text_color(s_auth_label, c, LV_PART_MAIN);
+    }
+}
+
 // Access global recognition app (for pause/resume)
 extern who::app::WhoRecognitionAppLCD *g_recognition_app;
 // Voice pause flag (checked by voice task)
@@ -73,6 +84,12 @@ bool FaceRecognitionApp::run()
         g_recognition_app->run();  // restart pipeline tasks (stopped by close())
         m_ui_created = true;
     }
+
+    // Right-side ALLOW/ALARM indicator
+    s_auth_label = lv_label_create(scr);
+    lv_label_set_text(s_auth_label, "");
+    lv_obj_set_style_text_font(s_auth_label, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_align(s_auth_label, LV_ALIGN_RIGHT_MID, -20, 0);
 
     // Create Exit button
     create_exit_button(scr);

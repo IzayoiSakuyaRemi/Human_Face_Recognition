@@ -1,5 +1,9 @@
 #pragma once
 #include "esp_brookesia.hpp"
+#include <stdbool.h>
+
+// Show ALLOW/ALARM on camera screen right side
+void face_app_show_auth(const char *text, bool allowed);
 
 class FaceRecognitionApp : public ESP_Brookesia_PhoneApp {
 public:

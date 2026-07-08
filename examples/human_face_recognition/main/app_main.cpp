@@ -300,6 +300,8 @@ static void voice_recognition_task(void *arg)
                                     snprintf(buf, sizeof(buf), "Alarm: Unknown person");
                             }
                             g_recognition_app->set_exec_text(buf);
+                            face_app_show_auth(voice_ok && face_ok ? "ALLOW" : "ALARM",
+                                               voice_ok && face_ok);
                         }
                         // Report event for commands 1-5
                         if (pending >= 1 && pending <= 5) {
@@ -448,6 +450,7 @@ static void voice_recognition_task(void *arg)
                     if (g_recognition_app) {
                         g_recognition_app->set_status_text(cmd);
                         g_recognition_app->set_exec_text(authorized ? "Allow: Yes" : "Alarm!");
+                        face_app_show_auth(authorized ? "ALLOW" : "ALARM", authorized);
                     }
                 }
                 // Reset model for next utterance (like xiaozhi CustomWakeWord does)
