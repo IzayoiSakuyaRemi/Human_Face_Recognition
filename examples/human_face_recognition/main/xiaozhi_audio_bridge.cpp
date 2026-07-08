@@ -19,6 +19,7 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <cstring>
 
 static const char *TAG = "xz_audio";
@@ -26,6 +27,9 @@ static const char *TAG = "xz_audio";
 /* ── Extern handles ───────────────────────── */
 extern esp_codec_dev_handle_t g_speaker_handle;
 extern esp_codec_dev_handle_t g_mic_handle;
+
+/* ── I2S mutex: serialize TX + RX on shared I2S peripheral ── */
+static SemaphoreHandle_t s_i2s_mutex = nullptr;
 
 /* ── Constants ────────────────────────────── */
 #define SAMPLES_PER_READ     512   // Exactly 2 DMA buffers — voice_cmd's proven pattern
@@ -56,9 +60,11 @@ static void on_pcm_down_frame(uint8_t type, const uint8_t *data, size_t len)
     ESP_LOGI(TAG, "PCM_DOWN rx: seq=%u samples=%u speaker=%p",
              (unsigned)hdr.seq, (unsigned)count, (void *)g_speaker_handle);
 
-#if 0  // DISABLED until I2S stability proven
-    if (g_speaker_handle && count > 0) {
+#if 0  // SPEAKER DISABLED: I2S TX DMA causes long-term PSRAM heap corruption
+    if (g_speaker_handle && count > 0 && s_i2s_mutex) {
+        xSemaphoreTake(s_i2s_mutex, portMAX_DELAY);
         esp_codec_dev_write(g_speaker_handle, (void *)pcm, count * sizeof(int16_t));
+        xSemaphoreGive(s_i2s_mutex);
     }
 #endif
 }
@@ -117,8 +123,9 @@ static void mic_capture_task(void *arg)
     TickType_t last_report = xTaskGetTickCount();
 
     while (s_running && g_mic_handle) {
-        // ── Read cycle: 2 × 512 samples (voice_cmd's proven pattern) ──
+        // ── Read cycle: 2 × 512 samples (I2S mutex held during reads) ──
         bool read_error = false;
+        if (s_i2s_mutex) xSemaphoreTake(s_i2s_mutex, pdMS_TO_TICKS(100));
         for (int r = 0; r < READS_PER_CYCLE; r++) {
             int ret = esp_codec_dev_read(g_mic_handle, read_buf, READ_BYTES);
             if (ret != 0) {
@@ -131,6 +138,7 @@ static void mic_capture_task(void *arg)
             ring_write(ring, &wpos, read_buf, SAMPLES_PER_READ);
             avail += SAMPLES_PER_READ;
         }
+        if (s_i2s_mutex) xSemaphoreGive(s_i2s_mutex);
         if (read_error) continue;
         cycle_ok++;
 
@@ -175,6 +183,9 @@ void xiaozhi_audio_bridge_start(void)
 
     s_running = true;
     s_seq = 0;
+
+    // Create I2S mutex (serialize TX + RX on shared I2S peripheral)
+    if (!s_i2s_mutex) s_i2s_mutex = xSemaphoreCreateMutex();
 
     uart_bridge_on_frame(on_pcm_down_frame);
 

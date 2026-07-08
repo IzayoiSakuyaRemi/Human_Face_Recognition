@@ -34,6 +34,7 @@ extern "C" { esp_err_t bsp_eth_init(void); }
 #include "who_lvgl_lcd.hpp"
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
+#include "xiaozhi_app.hpp"
 #include "speaker_verification.hpp"
 #include "dl_feat_verification_database.hpp"
 // wallpaper now loaded from SD card or NVS only (no compiled-in default)
@@ -751,6 +752,10 @@ extern "C" void app_main(void)
         // Install Settings App
         auto *settings_app = new SettingsApp();
         g_phone->installApp(settings_app);
+
+        // Install XiaoZhi App
+        auto *xiaozhi_app = new XiaoZhiApp();
+        g_phone->installApp(xiaozhi_app);
 
         // Clock update timer
         lv_timer_create(on_clock_update_cb, 1000, g_phone);
