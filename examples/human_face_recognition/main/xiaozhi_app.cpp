@@ -6,6 +6,7 @@
 #include "xiaozhi_app.hpp"
 #include "xiaozhi_audio_bridge.hpp"
 #include "xiaozhi_emoji.hpp"
+#include "radar_display.hpp"
 #include "uart_bridge.hpp"
 #include "xiaozhi/uart_frame_protocol.h"
 #include "esp_log.h"
@@ -266,6 +267,9 @@ void XiaoZhiApp::timer_cb(lv_timer_t *timer)
 
 void XiaoZhiApp::process_messages()
 {
+    // Keep screen on during xiaozhi mode (radar is paused)
+    radar_display_keep_awake();
+
     xz_msg_t msg;
     int msg_count = 0;
     while (xQueueReceive(m_msg_queue, &msg, 0) == pdTRUE && msg_count++ < 8) {

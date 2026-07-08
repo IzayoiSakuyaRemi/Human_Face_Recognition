@@ -20,7 +20,7 @@ static QueueHandle_t s_radar_queue = NULL;
 /* ── Screen sleep/wake state ───────────────── */
 static bool s_screen_on = true;
 static TickType_t s_last_moving = 0;
-static const int IDLE_TIMEOUT_S = 15;
+static const int IDLE_TIMEOUT_S = 10;
 
 /* Called by uart_bridge to push parsed radar data */
 void radar_display_push(const char *room, const char *move,
@@ -114,6 +114,15 @@ void radar_display_wake_screen(void)
         s_screen_on = true;
         s_last_moving = xTaskGetTickCount();
         ESP_LOGI(TAG, "Screen ON (touch wake)");
+    }
+}
+
+void radar_display_keep_awake(void)
+{
+    s_last_moving = xTaskGetTickCount();
+    if (!s_screen_on) {
+        gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+        s_screen_on = true;
     }
 }
 
