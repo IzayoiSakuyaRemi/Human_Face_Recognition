@@ -60,13 +60,11 @@ static void on_pcm_down_frame(uint8_t type, const uint8_t *data, size_t len)
     ESP_LOGI(TAG, "PCM_DOWN rx: seq=%u samples=%u speaker=%p",
              (unsigned)hdr.seq, (unsigned)count, (void *)g_speaker_handle);
 
-#if 0  // SPEAKER DISABLED: I2S TX DMA causes long-term PSRAM heap corruption
     if (g_speaker_handle && count > 0 && s_i2s_mutex) {
         xSemaphoreTake(s_i2s_mutex, portMAX_DELAY);
         esp_codec_dev_write(g_speaker_handle, (void *)pcm, count * sizeof(int16_t));
         xSemaphoreGive(s_i2s_mutex);
     }
-#endif
 }
 
 /* ── Ring buffer helpers ──────────────────── */

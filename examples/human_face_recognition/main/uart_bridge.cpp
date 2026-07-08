@@ -129,6 +129,12 @@ static void uart_rx_task(void *arg)
             }
 
             if (in_binary) {
+                // CRITICAL: guard against malformed headers causing bin_buf overflow
+                if (bin_pos >= (int)sizeof(bin_buf)) {
+                    ESP_LOGW(TAG, "Binary frame overflow (%d bytes), aborting", (int)bin_pos);
+                    in_binary = false;
+                    continue;
+                }
                 bin_buf[bin_pos++] = byte;
                 /* Try to determine expected length from header */
                 if (bin_pos >= 6 && bin_buf[0] == UART_FRAME_PCM_DOWN) {
@@ -142,7 +148,14 @@ static void uart_rx_task(void *arg)
                 } else if (bin_pos >= 20 && bin_buf[0] == UART_FRAME_ADR018) {
                     // ADR-018: header(20) + IQ data (variable, max ~4100)
                     uint16_t nsub = (uint16_t)bin_buf[6] | ((uint16_t)bin_buf[7] << 8);
-                    bin_expected = 20 + (size_t)nsub * 2;  // nsub * 1 antenna * 2 bytes
+                    bin_expected = 20 + (size_t)nsub * 2;
+                }
+                // Cap bin_expected to buffer size (malformed header guard)
+                if (bin_expected > sizeof(bin_buf)) {
+                    ESP_LOGW(TAG, "Frame too large (%d > %d), discarding",
+                             (int)bin_expected, (int)sizeof(bin_buf));
+                    in_binary = false;
+                    continue;
                 }
 
                 if (bin_pos >= bin_expected) {
