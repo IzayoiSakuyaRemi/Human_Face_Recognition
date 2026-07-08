@@ -31,7 +31,6 @@ private:
 
     lv_obj_t *m_title_label   = nullptr;
     lv_obj_t *m_emoji_img     = nullptr;   // emoji image
-    lv_obj_t *m_tts_label     = nullptr;   // xiaozhi reply (TTS)
     lv_obj_t *m_emotion_label = nullptr;   // emotion text
     lv_obj_t *m_status_label  = nullptr;   // connection status
     lv_obj_t *m_exit_btn      = nullptr;

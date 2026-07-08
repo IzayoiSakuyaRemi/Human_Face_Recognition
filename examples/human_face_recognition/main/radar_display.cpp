@@ -8,9 +8,9 @@
 #include "driver/gpio.h"
 #include "esp_brookesia.hpp"
 
-#define BSP_LCD_BACKLIGHT GPIO_NUM_20
+// GPIO 20 for backlight (BSP defines it as 26 for upstream board; this board uses 20)
+#define BK_GPIO GPIO_NUM_20
 
-// Access phone to launch Camera app on wake
 extern ESP_Brookesia_Phone *g_phone;
 #include <cstdio>
 #include <cstring>
@@ -46,13 +46,13 @@ static void radar_display_task(void *arg)
     s_last_moving = xTaskGetTickCount();
 
     // Take over GPIO 20 for direct backlight control
-    gpio_config_t bk_cfg = { .pin_bit_mask = BIT64(BSP_LCD_BACKLIGHT),
+    gpio_config_t bk_cfg = { .pin_bit_mask = BIT64(BK_GPIO),
                              .mode = GPIO_MODE_OUTPUT,
                              .pull_up_en = GPIO_PULLUP_DISABLE,
                              .pull_down_en = GPIO_PULLDOWN_DISABLE,
                              .intr_type = GPIO_INTR_DISABLE };
     gpio_config(&bk_cfg);
-    gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+    gpio_set_level(BK_GPIO, 1);
 
     ESP_LOGI(TAG, "Radar display task started (screen timeout=%ds)", IDLE_TIMEOUT_S);
 
@@ -74,7 +74,7 @@ static void radar_display_task(void *arg)
             if (strstr(msg.move, "MOVING")) {
                 s_last_moving = xTaskGetTickCount();
                 if (!s_screen_on) {
-                    gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+                    gpio_set_level(BK_GPIO, 1);
                     s_screen_on = true;
                     ESP_LOGI(TAG, "Screen ON (movement detected)");
                     // Auto-launch Camera app on wake
@@ -85,21 +85,25 @@ static void radar_display_task(void *arg)
 
         /* Check idle timeout (runs every 1s via queue timeout) */
         if (s_screen_on) {
-            // Reset idle timer on touch (lv_display_get_inactive_time tracks touch events)
-            uint32_t touch_idle = lv_display_get_inactive_time(NULL);
-            if (touch_idle < 2000) s_last_moving = xTaskGetTickCount();
+            // Keep screen on when any app is active (Camera, XiaoZhi, Settings)
+            if (g_phone && g_phone->getCoreManager().getActiveApp()) {
+                s_last_moving = xTaskGetTickCount();
+            } else {
+                uint32_t touch_idle = lv_display_get_inactive_time(NULL);
+                if (touch_idle < 2000) s_last_moving = xTaskGetTickCount();
 
-            TickType_t elapsed = xTaskGetTickCount() - s_last_moving;
-            if (elapsed > pdMS_TO_TICKS(IDLE_TIMEOUT_S * 1000)) {
-                gpio_set_level(BSP_LCD_BACKLIGHT, 0);
-                s_screen_on = false;
-                ESP_LOGI(TAG, "Screen OFF (idle %lus)", (unsigned long)(elapsed * portTICK_PERIOD_MS / 1000));
+                TickType_t elapsed = xTaskGetTickCount() - s_last_moving;
+                if (elapsed > pdMS_TO_TICKS(IDLE_TIMEOUT_S * 1000)) {
+                    gpio_set_level(BK_GPIO, 0);
+                    s_screen_on = false;
+                    ESP_LOGI(TAG, "Screen OFF (idle %lus)", (unsigned long)(elapsed * portTICK_PERIOD_MS / 1000));
+                }
             }
         } else {
             // Wake on touch even without radar movement
             uint32_t touch_idle = lv_display_get_inactive_time(NULL);
             if (touch_idle < 2000) {
-                gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+                gpio_set_level(BK_GPIO, 1);
                 s_screen_on = true;
                 s_last_moving = xTaskGetTickCount();
                 ESP_LOGI(TAG, "Screen ON (touch wake)");
@@ -117,7 +121,7 @@ bool radar_display_is_screen_on(void)
 void radar_display_wake_screen(void)
 {
     if (!s_screen_on) {
-        gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+        gpio_set_level(BK_GPIO, 1);
         s_screen_on = true;
         s_last_moving = xTaskGetTickCount();
         ESP_LOGI(TAG, "Screen ON (touch wake)");
@@ -128,7 +132,7 @@ void radar_display_keep_awake(void)
 {
     s_last_moving = xTaskGetTickCount();
     if (!s_screen_on) {
-        gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+        gpio_set_level(BK_GPIO, 1);
         s_screen_on = true;
     }
 }

@@ -108,15 +108,6 @@ bool XiaoZhiApp::run()
         lv_image_set_scale(m_emoji_img, (uint16_t)(sf * 256.0f));
     }
 
-    /* ── TTS area (xiaozhi reply) ──────────── */
-    m_tts_label = lv_label_create(scr);
-    lv_label_set_text(m_tts_label, "");
-    lv_obj_set_style_text_color(m_tts_label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_text_font(m_tts_label, &lv_font_simsun_16_cjk, LV_PART_MAIN);
-    lv_obj_set_width(m_tts_label, lv_pct(90));
-    lv_label_set_long_mode(m_tts_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(m_tts_label, LV_ALIGN_BOTTOM_MID, 0, -60);
-
     /* ── Emotion text label ─────────────────── */
     m_emotion_label = lv_label_create(scr);
     lv_label_set_text(m_emotion_label, "");
@@ -276,8 +267,6 @@ void XiaoZhiApp::process_messages()
         if (strcmp(msg.type, "stt") == 0) {
             lv_label_set_text(m_status_label, "Listening...");
         } else if (strcmp(msg.type, "tts") == 0) {
-            // Show only latest xiaozhi reply (replace, not accumulate)
-            lv_label_set_text(m_tts_label, msg.text);
             lv_label_set_text(m_status_label, "Speaking...");
         } else if (strcmp(msg.type, "emotion") == 0) {
             ESP_LOGI(TAG, "emoji switch: '%s'", msg.text);
