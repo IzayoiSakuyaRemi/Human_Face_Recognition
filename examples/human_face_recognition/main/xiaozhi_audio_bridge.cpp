@@ -72,6 +72,7 @@ static void on_pcm_down_frame(uint8_t type, const uint8_t *data, size_t len)
 static inline void ring_write(int16_t *ring, volatile int *wpos,
                               const int16_t *src, int count)
 {
+    if (!ring || !src || count <= 0) return;
     int pos = *wpos;
     int first = (RING_SAMPLES - pos < count) ? RING_SAMPLES - pos : count;
     memcpy(&ring[pos], src, first * sizeof(int16_t));
@@ -83,6 +84,7 @@ static inline void ring_write(int16_t *ring, volatile int *wpos,
 static inline void ring_read(int16_t *ring, volatile int *rpos,
                              volatile int *avail, int16_t *dst, int count)
 {
+    if (!ring || !dst || count <= 0 || *avail < count) return;
     int pos = *rpos;
     int first = (RING_SAMPLES - pos < count) ? RING_SAMPLES - pos : count;
     memcpy(dst, &ring[pos], first * sizeof(int16_t));
