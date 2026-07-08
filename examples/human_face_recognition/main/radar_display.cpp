@@ -6,8 +6,12 @@
 #include "esp_log.h"
 #include "lvgl.h"
 #include "driver/gpio.h"
+#include "esp_brookesia.hpp"
 
 #define BSP_LCD_BACKLIGHT GPIO_NUM_20
+
+// Access phone to launch Camera app on wake
+extern ESP_Brookesia_Phone *g_phone;
 #include <cstdio>
 #include <cstring>
 
@@ -73,6 +77,8 @@ static void radar_display_task(void *arg)
                     gpio_set_level(BSP_LCD_BACKLIGHT, 1);
                     s_screen_on = true;
                     ESP_LOGI(TAG, "Screen ON (movement detected)");
+                    // Auto-launch Camera app on wake
+                    if (g_phone) g_phone->getCoreManager().startApp(0);
                 }
             }
         }
@@ -97,6 +103,7 @@ static void radar_display_task(void *arg)
                 s_screen_on = true;
                 s_last_moving = xTaskGetTickCount();
                 ESP_LOGI(TAG, "Screen ON (touch wake)");
+                if (g_phone) g_phone->getCoreManager().startApp(0);
             }
         }
     }

@@ -48,7 +48,7 @@ who::app::WhoRecognitionAppLCD *g_recognition_app = nullptr;
 bool g_voice_paused = true;  // paused until Camera App opens
 
 // Brookesia globals
-static ESP_Brookesia_Phone *g_phone = nullptr;
+ESP_Brookesia_Phone *g_phone = nullptr;
 // Dynamic wallpaper tracking (for cleanup on switch)
 // Non-static so SettingsApp can free boot-time allocation
 lv_image_dsc_t *g_active_wp_dsc = nullptr;
