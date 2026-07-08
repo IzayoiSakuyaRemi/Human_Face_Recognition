@@ -34,6 +34,7 @@
 #include <stdio.h>
 
 static const char *TAG = "xz_relay";
+static bool g_active = false;
 
 /* ── Forward xiaozhi status to P4 via UART JSON ── */
 static void xz_send_to_p4(const char *xz_type, const char *key, const char *value)
@@ -54,7 +55,6 @@ static void xz_send_to_p4(const char *xz_type, const char *key, const char *valu
 /* ── Protocol stack ───────────────────────────── */
 static std::unique_ptr<MqttProtocol> g_protocol;
 static std::unique_ptr<AudioService>  g_audio_service;
-static bool g_active    = false;
 static bool g_mic_open  = false;
 
 /* ── Forward ──────────────────────────────────── */
