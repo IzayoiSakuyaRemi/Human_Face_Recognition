@@ -577,10 +577,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t b, int32_t id, void *
 {
     if (b == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         g_wifi_connected = true;
+        uart_write_bytes(UART_NUM_1, "{\"dev\":\"s3\",\"wifi\":\"connected\"}\n", 35);
         xTaskCreate(trigger_router_send_data_task, "trig_send", 6144, NULL, 5, NULL);
         ESP_ERROR_CHECK(esp_wifi_set_promiscuous(false));
     } else if (b == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         g_wifi_connected = false;
+        uart_write_bytes(UART_NUM_1, "{\"dev\":\"s3\",\"wifi\":\"disconnected\"}\n", 38);
         ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting...");
         if (g_ping_handle) { esp_ping_stop(g_ping_handle); esp_ping_delete_session(g_ping_handle); g_ping_handle = NULL; }
         /* Simple reconnect instead of full reinit (reinit breaks STA netif) */
