@@ -265,9 +265,10 @@ void XiaoZhiApp::process_messages()
         } else if (strcmp(msg.type, "tts") == 0) {
             // Accumulate TTS sentences; reset if buffer would overflow
             const char *prev = lv_label_get_text(m_tts_label);
-            char buf[600];
+            char buf[720];
             if (prev && prev[0] && strlen(prev) < 400) {
-                snprintf(buf, sizeof(buf), "%s\n%.250s", prev, msg.text);
+                int n = snprintf(buf, sizeof(buf), "%s\n%.250s", prev, msg.text);
+                if (n >= (int)sizeof(buf)) buf[sizeof(buf)-1] = 0;
             } else {
                 snprintf(buf, sizeof(buf), "XiaoZhi: %.250s", msg.text);
             }
