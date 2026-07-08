@@ -35,6 +35,18 @@
 
 static const char *TAG = "xz_relay";
 
+/* ── Forward xiaozhi status to P4 via UART JSON ── */
+static void xz_send_to_p4(const char *xz_type, const char *key, const char *value)
+{
+    char buf[512];
+    int len = snprintf(buf, sizeof(buf),
+        "{\"dev\":\"s3\",\"xz\":{\"type\":\"%s\",\"%s\":\"%s\"}}\n",
+        xz_type, key, value);
+    if (len > 0 && len < (int)sizeof(buf)) {
+        uart_write_bytes(UART_NUM_1, buf, len);
+    }
+}
+
 /* ── Protocol stack ───────────────────────────── */
 static std::unique_ptr<MqttProtocol> g_protocol;
 static std::unique_ptr<AudioService>  g_audio_service;
@@ -198,30 +210,37 @@ bool xiaozhi_relay_start(void)
             auto state = cJSON_GetObjectItem(root, "state");
             if (cJSON_IsString(state)) {
                 if (strcmp(state->valuestring, "start") == 0) {
-                    ESP_LOGI(TAG, "🔊 TTS start");
+                    ESP_LOGI(TAG, "TTS start");
                 } else if (strcmp(state->valuestring, "stop") == 0) {
-                    ESP_LOGI(TAG, "🔊 TTS stop — restarting listening");
+                    ESP_LOGI(TAG, "TTS stop — restarting listening");
                     g_protocol->SendStartListening(kListeningModeAutoStop);
                 } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                     auto text = cJSON_GetObjectItem(root, "text");
-                    if (cJSON_IsString(text))
+                    if (cJSON_IsString(text)) {
                         ESP_LOGI(TAG, "<< %s", text->valuestring);
+                        xz_send_to_p4("tts", "text", text->valuestring);
+                    }
                 }
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
             auto text = cJSON_GetObjectItem(root, "text");
-            if (cJSON_IsString(text))
+            if (cJSON_IsString(text)) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
+                xz_send_to_p4("stt", "text", text->valuestring);
+            }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(emotion))
-                ESP_LOGI(TAG, "😊 Emotion: %s", emotion->valuestring);
+            if (cJSON_IsString(emotion)) {
+                ESP_LOGI(TAG, "Emotion: %s", emotion->valuestring);
+                xz_send_to_p4("emotion", "emotion", emotion->valuestring);
+            }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
-            ESP_LOGI(TAG, "🔧 MCP message received");
+            ESP_LOGI(TAG, "MCP message received");
+            xz_send_to_p4("mcp", "text", "mcp");
         } else if (strcmp(type->valuestring, "system") == 0) {
             auto command = cJSON_GetObjectItem(root, "command");
             if (cJSON_IsString(command))
-                ESP_LOGI(TAG, "⚙ System: %s", command->valuestring);
+                ESP_LOGI(TAG, "System: %s", command->valuestring);
         }
     });
 
