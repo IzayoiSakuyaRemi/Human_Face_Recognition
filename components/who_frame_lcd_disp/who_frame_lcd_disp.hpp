@@ -30,7 +30,7 @@ private:
     lv_obj_t *m_canvas;
 #endif
     frame_cap::WhoFrameCapNode *m_frame_cap_node;
-    bool m_peek_index;
+    int m_peek_index;  // was bool — truncated cam_fb_peek() index values
     std::function<void(who::cam::cam_fb_t *)> m_lcd_disp_cb;
 };
 } // namespace lcd_disp

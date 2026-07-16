@@ -19,7 +19,6 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 // #include "esp_wifi.h"     // C5 removed
-#include "esp_sntp.h"
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_eth.h"
@@ -71,7 +70,7 @@ static volatile int g_skip_detect_count = 0;
 static SpeakerVerification *g_speaker_verifier = nullptr;
 static dl::feat::FeatVerificationDatabase *g_voice_db = nullptr;
 bool g_voice_enrolling = false;
-bool g_voice_enroll_allowed = false;  // gate: only when Settings enables it
+bool g_voice_enroll_allowed = true;  // Settings toggle removed — always allowed
 bool g_voice_verifying = false;
 static int g_voice_collect_samples = 0;
 static int16_t *g_voice_cap_buf = nullptr;   // captured audio for verification
@@ -127,9 +126,11 @@ static void voice_recognition_task(void *arg)
     int chunksize = p->chunksize;
     free(p);
 
-    // BSP codec may configure I2S as MONO or STEREO depending on version.
-    // We read chunksize mono samples and let the driver handle the format.
-    int read_bytes = chunksize * sizeof(int16_t);
+    // I2S is configured as STEREO (2ch). Codec may return stereo data
+    // even with channel_mask=1, depending on driver version.
+    // Allocate stereo-sized buffer to prevent heap overflow on every read.
+    // (30s of 32ms reads = ~937 overflows if buffer is too small)
+    int read_bytes = chunksize * sizeof(int16_t) * 2;
     int16_t *audio_buf = (int16_t *)malloc(read_bytes);
     if (!audio_buf) {
         ESP_LOGE(TAG, "Voice: buffer alloc failed");
@@ -195,7 +196,8 @@ static void voice_recognition_task(void *arg)
         if (now - last_log > 1000000) {
             int nz = 0;
             for (int i = 0; i < chunksize; i++) if (audio_buf[i] != 0) nz++;
-            ESP_LOGI(TAG, "Voice: %d reads/sec, nonzero=%d/%d", read_count, nz, chunksize);
+            ESP_LOGI(TAG, "Voice: %d reads/sec, nonzero=%d/%d stack_free=%lu",
+                     read_count, nz, chunksize, uxTaskGetStackHighWaterMark(NULL));
             read_count = 0;
             last_log = now;
         }
@@ -528,8 +530,11 @@ extern "C" void app_main(void)
     esp_event_loop_create_default();
 
     // ── Ethernet (IP101, RMII, pins 31/52/51) ──
+    // DIAGNOSTIC STEP 3: disable Ethernet to test DHCP theory
+#if 0
     ESP_ERROR_CHECK(bsp_eth_init());
     ESP_LOGI(TAG, "Ethernet init successfully");
+#endif
 
     // ── UART bridge to S3 (GPIO4/5, 921600 baud) ──
     uart_bridge_init();
@@ -621,6 +626,9 @@ extern "C" void app_main(void)
         sdmmc_card_t *card = NULL;
 
         sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+        // 20MHz reads corrupt data under PSRAM/DMA contention (LVGL+camera active).
+        // SPI mode has no data CRC — corruption is silent. 10MHz is reliable.
+        host.max_freq_khz = 10000;
 
         // Internal LDO power for UHS-I pins (39-44)
         sd_pwr_ctrl_ldo_config_t ldo_cfg = { .ldo_chan_id = 4 };
@@ -785,22 +793,13 @@ extern "C" void app_main(void)
         // Clock update timer
         lv_timer_create(on_clock_update_cb, 1000, g_phone);
 
-        // SNTP time sync over Ethernet (WiFi icon driven by S3 status)
-        static bool s_eth_sntp_started = false;
-        lv_timer_create([](lv_timer_t *t) {
-            esp_netif_t *eth = esp_netif_get_handle_from_ifkey("ETH");
-            if (eth && esp_netif_is_netif_up(eth) && !s_eth_sntp_started) {
-                s_eth_sntp_started = true;
-                esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-                esp_sntp_setservername(0, (char *)"ntp.aliyun.com");
-                esp_sntp_setservername(1, (char *)"pool.ntp.org");
-                esp_sntp_init();
-                setenv("TZ", "CST-8", 1); tzset();
-                ESP_LOGI(TAG, "SNTP started over Ethernet");
-            }
-        }, 3000, g_phone);
+        // Time sync: P4 has no network. S3 syncs time via WiFi SNTP and sends
+        // {"dev":"s3","time":<unix_ts>} over UART. uart_rx_task calls settimeofday().
 
         bsp_display_unlock();
+
+        // === DIAGNOSTIC STEP 5: re-enable face pipeline ONLY ===
+        ESP_LOGI(TAG, "DIAGNOSTIC STEP 5: face pipeline only (no speaker verif, no voice)");
     }
 
     // ---- Create Recognition App (pipeline only, UI created in FaceRecognitionApp::run()) ----
@@ -809,68 +808,58 @@ extern "C" void app_main(void)
 
     g_espdl_mutex = xSemaphoreCreateMutex();
 
-    // ---- Speaker Verification Init ----
+    // ---- Speaker Verification Init (instrumented fast-load path) ----
     {
-        ESP_LOGI(TAG, "Init speaker verification...");
-        g_speaker_verifier = new SpeakerVerification(3); // 3-second model (faster, EER=4.5%)
+        ESP_LOGI(TAG, "Init speaker verification (fast SD→PSRAM load)...");
+        g_speaker_verifier = new SpeakerVerification(3);
         g_embedding_dim = g_speaker_verifier->get_embedding_dim();
-        g_voice_db = new dl::feat::FeatVerificationDatabase("/sdcard/voice.db", g_embedding_dim);
-        if (!g_voice_db->is_valid()) {
-            ESP_LOGW(TAG, "Voice DB init failed, creating new one...");
-        }
-        // Populate g_voice_embeddings[] from persistent DB
-        g_voice_user_count = 0;
-        if (g_voice_db->is_valid()) {
-            auto labels = g_voice_db->get_labels();
-            for (const auto &label : labels) {
-                auto embeddings = g_voice_db->get_embeddings(label);
-                if (!embeddings.empty() && g_voice_user_count < MAX_VOICE_USERS) {
-                    int slot = g_voice_user_count;
-                    if (!g_voice_embeddings[slot])
-                        g_voice_embeddings[slot] = (float *)malloc(g_embedding_dim * sizeof(float));
-                    if (g_voice_embeddings[slot])
-                        memcpy(g_voice_embeddings[slot], embeddings[0].data(), g_embedding_dim * sizeof(float));
-                    g_voice_user_count++;
-                }
+        if (g_embedding_dim > 0) {
+            g_voice_db = new dl::feat::FeatVerificationDatabase("/sdcard/voice.db", g_embedding_dim);
+            if (!g_voice_db->is_valid()) {
+                ESP_LOGW(TAG, "Voice DB init failed, creating new one...");
             }
-            // One-time migration: delete old "user1" entries from single-user era
-            if (g_voice_user_count > 0) {
-                nvs_handle_t nvs;
-                if (nvs_open("voice", NVS_READWRITE, &nvs) == ESP_OK) {
-                    uint8_t migrated = 0;
-                    nvs_get_u8(nvs, "migrated", &migrated);
-                    if (!migrated) {
-                        g_voice_db->clear();
-                        for (int i = 0; i < MAX_VOICE_USERS; i++) { free(g_voice_embeddings[i]); g_voice_embeddings[i] = nullptr; }
-                        g_voice_user_count = 0;
-                        nvs_set_u8(nvs, "migrated", 1);
-                        nvs_commit(nvs);
-                        ESP_LOGI(TAG, "Voice DB migrated: old entries cleared, please re-enroll.");
+            // Populate g_voice_embeddings[] from persistent DB
+            g_voice_user_count = 0;
+            if (g_voice_db->is_valid()) {
+                auto labels = g_voice_db->get_labels();
+                for (const auto &label : labels) {
+                    auto embeddings = g_voice_db->get_embeddings(label);
+                    if (!embeddings.empty() && g_voice_user_count < MAX_VOICE_USERS) {
+                        int slot = g_voice_user_count;
+                        if (!g_voice_embeddings[slot])
+                            g_voice_embeddings[slot] = (float *)malloc(g_embedding_dim * sizeof(float));
+                        if (g_voice_embeddings[slot])
+                            memcpy(g_voice_embeddings[slot], embeddings[0].data(), g_embedding_dim * sizeof(float));
+                        g_voice_user_count++;
                     }
-                    nvs_close(nvs);
                 }
+                ESP_LOGI(TAG, "Loaded %d voice user(s) from database", g_voice_user_count);
             }
-            ESP_LOGI(TAG, "Loaded %d voice user(s) from database", g_voice_user_count);
+            g_voice_cap_buf = (int16_t *)heap_caps_malloc(16000 * 3 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+            ESP_LOGI(TAG, "Speaker verification ready (emb=%d dims)", g_embedding_dim);
+        } else {
+            ESP_LOGE(TAG, "Speaker verification model failed to load — voice cmd still works (face-only auth)");
         }
-        // Allocate rolling buffer (5s, 160KB) + capture buffer (3s, 96KB)
-        g_rolling_buf = (int16_t *)heap_caps_malloc(ROLLING_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-        g_voice_cap_buf = (int16_t *)heap_caps_malloc(16000 * 3 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-        if (!g_rolling_buf || !g_voice_cap_buf) {
-            ESP_LOGE(TAG, "Failed to allocate voice buffers");
-        }
-        ESP_LOGI(TAG, "Speaker verification ready (emb=%d dims). Say 'zhu ce sheng wen' to enroll, 'shi bie sheng yin' to verify.",
-                 g_embedding_dim);
     }
 
+    // Rolling audio buffer (5s ring) — required by voice task for command capture
+    // AND speaker verification snapshots. Allocate regardless of SV model status.
+    g_rolling_buf = (int16_t *)heap_caps_malloc(ROLLING_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (!g_rolling_buf) {
+        ESP_LOGE(TAG, "Failed to allocate 5s rolling audio buffer");
+    }
+
+    // Voice command recognition (MultiNet)
     if (voice_params.multinet) {
         voice_task_params_t *p = (voice_task_params_t *)malloc(sizeof(voice_task_params_t));
         if (p) {
             *p = voice_params;
-            xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 8192, p, 3, NULL, 0);
+            xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 16384, p, 3, NULL, 0);
         } else {
             ESP_LOGE(TAG, "Failed to allocate voice task params");
         }
     }
 
+    // === DIAGNOSTIC STEP 5: face pipeline re-enabled ===
     recognition_app->run();
 }

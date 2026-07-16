@@ -127,10 +127,12 @@ bool WhoRecognitionAppLCD::run()
 {
     bool ret = WhoYield2Idle::get_instance()->run();
     for (const auto &frame_cap_node : m_frame_cap->get_all_nodes()) {
-        ret &= frame_cap_node->run(4096, 2, 0);
+        // VIDIOC_DQBUF ioctl call chain (VFS→V4L2→MIPI-CSI→ISP) needs 6-8KB
+        ret &= frame_cap_node->run(8192, 2, 0);
     }
     if (m_lcd_disp) {
-        ret &= m_lcd_disp->run(2560, 2, 0);
+        // lv_canvas_set_buffer + lv_obj_invalidate inside LVGL lock
+        ret &= m_lcd_disp->run(4096, 2, 0);
     }
     ret &= m_recognition->get_detect_task()->run(3584, 2, 1);
     ret &= m_recognition->get_recognition_task()->run(3584, 2, 1);

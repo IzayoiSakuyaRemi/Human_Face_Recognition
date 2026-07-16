@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -239,6 +240,16 @@ static void uart_rx_task(void *arg)
                         float j = json_extract_float(line, "jitter");
                         radar_display_push(room, move, w, j);
                         ESP_LOGI(TAG, "S3 radar: %s/%s w=%.4f j=%.4f", room, move, w, j);
+                    }
+                    // S3 time sync → set system clock directly (S3 has WiFi + SNTP)
+                    if (line[0] == '{' && strstr(line, "\"dev\":\"s3\"") && strstr(line, "\"time\"")) {
+                        const char *tp = strstr(line, "\"time\":");
+                        long long ts = tp ? strtoll(tp + 7, NULL, 10) : 0;
+                        if (ts > 1700000000) {  // sanity: must be after 2023
+                            struct timeval tv = { .tv_sec = (time_t)ts, .tv_usec = 0 };
+                            settimeofday(&tv, NULL);
+                            ESP_LOGI(TAG, "Time set from S3: %lld", ts);
+                        }
                     }
                     // S3 WiFi status → set flag, clock timer applies on Core1 (LVGL-safe)
                     if (line[0] == '{' && strstr(line, "\"dev\":\"s3\"") && strstr(line, "\"wifi\"")) {
