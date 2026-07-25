@@ -42,6 +42,9 @@ extern "C" {
 #define CTRL_RADAR_TRAIN_CLEAR  0x09  /* P4→S3: clear training data */
 #define CTRL_RADAR_STATUS       0x0A  /* S3→P4: training status update */
 #define CTRL_RADAR_TRAIN_DONE   0x0B  /* S3→P4: training done + thresholds */
+#define CTRL_VOICE_SCORE        0x0E  /* S3→P4: voice verify score JSON */
+#define CTRL_VOICE_SRV_ENTER     0x0F  /* P4→S3: enter voice server mode (stop radar) */
+#define CTRL_VOICE_SRV_EXIT      0x10  /* P4→S3: exit voice server mode (start radar) */
 
 /* ── PCM frame flags ───────────────────────── */
 #define PCM_FLAG_FLUSH      (1 << 0)  /* Flush playback queue */

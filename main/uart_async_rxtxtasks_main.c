@@ -31,16 +31,20 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "esp_sntp.h"
+#include <sys/time.h>
+#include <time.h>
 #include "esp_radar.h"
 #include "esp_csi_gain_ctrl.h"
 #include "csi_adr018.h"
 #include "event_reporter.h"
 #include "xiaozhi/uart_frame_protocol.h"
 #include "xiaozhi/xiaozhi_relay.h"
+#include "xiaozhi/voice_verify.h"
+extern void uart_audio_codec_feed_pcm(const int16_t *data, int samples);
 
 /* ── C-linkage wrapper for UartAudioCodec (C++ class) ──
  * Called from this C file's demux task to feed PCM into the C++ codec. */
-extern void uart_audio_codec_feed_pcm(const int16_t *data, int samples);
 
 /* ── UART1 (to P4) ────────────────────────── */
 #define TXD_PIN          GPIO_NUM_17
@@ -293,6 +297,14 @@ static void uart_frame_demux_task(void *arg)
                                 bin_buf + CTRL_FRAME_HEADER_SIZE,
                                 ctrl->payload_len);
                             break;
+                        case CTRL_VOICE_SRV_ENTER:
+                            esp_radar_stop();
+                            ESP_LOGI(TAG, "Voice SRV mode: radar off");
+                            break;
+                        case CTRL_VOICE_SRV_EXIT:
+                            esp_radar_start();
+                            ESP_LOGI(TAG, "Exit voice SRV: radar on");
+                            break;
                         default:
                             ESP_LOGI(TAG, "Unknown ctrl cmd %d", ctrl->cmd);
                         }
@@ -306,7 +318,10 @@ static void uart_frame_demux_task(void *arg)
                             if (++s_pcm_count % 50 == 1)  // log every 50th frame (~3 sec)
                                 ESP_LOGI(TAG, "PCM_UP #%lu: seq=%u samples=%u",
                                          s_pcm_count, pcm_hdr.seq, pcm_count);
-                            uart_audio_codec_feed_pcm(pcm_data, pcm_count);
+                            if (xiaozhi_relay_is_active())
+                                uart_audio_codec_feed_pcm(pcm_data, pcm_count);
+                            else
+                                voice_verify_feed_pcm(pcm_data, pcm_count);
                         } else {
                             ESP_LOGW(TAG, "PCM_UP CRC mismatch, dropping frame");
                         }
@@ -487,9 +502,9 @@ static void wifi_radar_cb(void *ctx, const wifi_radar_info_t *info)
     }
     bool room = (sc >= 1), human = (mc >= bo);
 
-    static uint32_t s_count = 0, slm = 0, sls = 0, slp = 0, slt = 0;
-    if (!s_count)
-        ESP_LOGI(TAG, "================ RADAR RECV ================");
+    static uint32_t s_count = 0, slm = 0, sls = 0, slp = 0; // slt unused, removed
+    //if (!s_count)
+    //    ESP_LOGI(TAG, "================ RADAR RECV ================");
 
     if (g_rcfg.train_start) {
         slm = sls = esp_log_timestamp();
@@ -513,7 +528,8 @@ static void wifi_radar_cb(void *ctx, const wifi_radar_info_t *info)
         const char *rs = room ? "OCCUPIED" : "EMPTY";
         const char *ms = human ? "MOVING" : "still";
         /* Console summary */
-        printf("RADAR #%d  %s/%s  wander=%.4f jitter=%.4f\n", s_count++, rs, ms, info->waveform_wander, info->waveform_jitter);
+        //printf("RADAR #%d  %s/%s  wander=%.4f jitter=%.4f\n", s_count++, rs, ms, info->waveform_wander, info->waveform_jitter);
+        s_count++;
         /* UART1 → P4 */
         char js[200];
         int n = snprintf(js, sizeof(js),
@@ -530,8 +546,8 @@ static void wifi_radar_cb(void *ctx, const wifi_radar_info_t *info)
         if (!human && esp_log_timestamp() - slm > 3000) { ESP_LOGI(TAG, ">>> still <<<"); }
         sls = esp_log_timestamp();
     } else {
-        if (human && esp_log_timestamp() - slt > 3000)  { ESP_LOGI(TAG, ">>> transient >>>"); slt = esp_log_timestamp(); }
-        if (!human && esp_log_timestamp() - slm > 3000) { ESP_LOGI(TAG, ">>> no one <<<"); }
+        //if (human && esp_log_timestamp() - slt > 3000)  { ESP_LOGI(TAG, ">>> transient >>>"); slt = esp_log_timestamp(); }
+        //if (!human && esp_log_timestamp() - slm > 3000) { ESP_LOGI(TAG, ">>> no one <<<"); }
     }
 }
 
@@ -573,17 +589,69 @@ static void trigger_router_send_data_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/* ══════════════════════════════════════════════
+ *  SNTP → P4 time sync (plain C — no lambdas)
+ *  S3 syncs UTC via NTP; sends epoch to P4 every 30s over UART.
+ *  P4 calls settimeofday() and renders with TZ=CST-8.
+ * ══════════════════════════════════════════════ */
+static bool s_time_synced = false;
+
+static void sntp_sync_cb(struct timeval *tv)
+{
+    s_time_synced = true;
+    ESP_LOGI(TAG, "SNTP synced! tv_sec=%lld", (long long)tv->tv_sec);
+}
+
+/* Dedicated task (NOT a FreeRTOS timer callback!) — snprintf with %lld +
+ * localtime_r + ESP_LOGI need ~2KB stack, which overflows the shared
+ * 2KB "Tmr Svc" timer task. Own task with 3KB stack instead. */
+static void time_sync_task(void *arg)
+{
+    bool first_send = true;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        if (!s_time_synced) continue;
+        if (first_send) { first_send = false; ESP_LOGI(TAG, "First time sync to P4"); }
+        time_t now;
+        struct tm ti;
+        time(&now);
+        localtime_r(&now, &ti);
+        char js[96];
+        int n = snprintf(js, sizeof(js),
+            "{\"dev\":\"s3\",\"time\":%lld,\"str\":\"%02d:%02d:%02d\"}\n",
+            (long long)now, ti.tm_hour, ti.tm_min, ti.tm_sec);
+        uart_write_bytes(UART_NUM_1, js, n);
+    }
+}
+
 /* ── WiFi event handler ────────────────────── */
 static void wifi_event_handler(void *arg, esp_event_base_t b, int32_t id, void *d)
 {
     if (b == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         g_wifi_connected = true;
-        uart_write_bytes(UART_NUM_1, "{\"dev\":\"s3\",\"wifi\":\"connected\"}\n", 35);
+        // NOTE: exact strlen — hardcoded 35 was 3 bytes past the literal,
+        // leaking NUL+garbage that corrupted the NEXT JSON line on P4
+        const char *wifi_up = "{\"dev\":\"s3\",\"wifi\":\"connected\"}\n";
+        uart_write_bytes(UART_NUM_1, wifi_up, strlen(wifi_up));
         xTaskCreate(trigger_router_send_data_task, "trig_send", 6144, NULL, 5, NULL);
         ESP_ERROR_CHECK(esp_wifi_set_promiscuous(false));
+
+        // Start SNTP time sync (register callback BEFORE init)
+        if (!esp_sntp_enabled()) {
+            esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+            esp_sntp_setservername(0, (char *)"ntp.aliyun.com");
+            esp_sntp_setservername(1, (char *)"pool.ntp.org");
+            esp_sntp_set_sync_interval(60000);
+            sntp_set_time_sync_notification_cb(sntp_sync_cb);
+            setenv("TZ", "CST-8", 1); tzset();
+            esp_sntp_init();
+            ESP_LOGI(TAG, "SNTP started over WiFi");
+        }
     } else if (b == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         g_wifi_connected = false;
-        uart_write_bytes(UART_NUM_1, "{\"dev\":\"s3\",\"wifi\":\"disconnected\"}\n", 38);
+        s_time_synced = false;  // reset — will re-sync after reconnect
+        const char *wifi_down = "{\"dev\":\"s3\",\"wifi\":\"disconnected\"}\n";
+        uart_write_bytes(UART_NUM_1, wifi_down, strlen(wifi_down));
         ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting...");
         if (g_ping_handle) { esp_ping_stop(g_ping_handle); esp_ping_delete_session(g_ping_handle); g_ping_handle = NULL; }
         /* Simple reconnect instead of full reinit (reinit breaks STA netif) */
@@ -1226,4 +1294,8 @@ void app_main(void)
 
     /* Start HTTP event reporter (async, no block on send failure) */
     event_reporter_init();
+    voice_verify_init();
+
+    /* ── SNTP → P4 time sync task (every 30s; only sends after first NTP sync) ── */
+    xTaskCreate(time_sync_task, "time_sync", 3072, NULL, 2, NULL);
 }

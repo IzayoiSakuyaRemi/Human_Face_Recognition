@@ -31,7 +31,7 @@ static void reporter_task(void *arg)
 
     while (xQueueReceive(s_queue, &msg, portMAX_DELAY)) {
         esp_http_client_config_t cfg = {
-            .url = "http://10.17.144.96:8765/api/event",
+            .url = "http://10.53.101.96:8765/api/event",
             .method = HTTP_METHOD_POST,
             .timeout_ms = 3000,
         };
@@ -53,7 +53,7 @@ void event_reporter_init(void)
 {
     s_queue = xQueueCreate(REPORT_QUEUE_DEPTH, sizeof(report_msg_t));
     xTaskCreate(reporter_task, "reporter", 4096, NULL, 3, NULL);
-    ESP_LOGI(TAG, "Reporter started → http://10.17.144.96:8765/api/event");
+    ESP_LOGI(TAG, "Reporter started → http://10.221.33.96:8765/api/event");
 }
 
 void report_radar_event(bool room, bool moving, float wander, float jitter)

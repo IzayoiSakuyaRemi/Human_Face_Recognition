@@ -5,6 +5,7 @@ set(SRCS
     "event_reporter.c"
     "xiaozhi/uart_frame_protocol.c"
     "xiaozhi/xiaozhi_relay.cc"
+    "xiaozhi/voice_verify.c"
 )
 
 # ── S3 shim (C++) ──
