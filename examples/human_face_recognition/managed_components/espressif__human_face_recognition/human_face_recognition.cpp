@@ -64,8 +64,8 @@ void HumanFaceFeat::load_model()
 
 HumanFaceRecognizer::HumanFaceRecognizer(const std::string &db_path,
                                          HumanFaceFeat::model_type_t model_type,
-                                         bool lazy_load) :
-    m_feat(model_type, lazy_load), m_db_path(db_path), m_thr(0.5), m_top_k(1)
+                                         bool lazy_load, float thr) :
+    m_feat(model_type, lazy_load), m_db_path(db_path), m_thr(thr), m_top_k(1)
 {
     if (lazy_load) {
         m_db = nullptr;

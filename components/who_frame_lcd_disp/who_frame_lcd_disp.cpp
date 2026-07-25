@@ -95,7 +95,15 @@ void WhoFrameLCDDisp::task()
         m_lcd->draw_bitmap(fb->buf, (int)fb->width, (int)fb->height, 0, 0);
 #else
         if (m_canvas) {
-            bsp_display_lock(0);
+            // DEADLOCK FIX: bounded lock wait instead of forever.
+            // The Exit-button path runs in the LVGL task (lock held) and calls
+            // stop() which blocks until we ack TASK_STOPPED. If we wait forever
+            // for the same lock here, both sides freeze permanently.
+            // On timeout: drop this frame and loop back — the event wait will
+            // deliver TASK_STOP/TASK_PAUSE if a shutdown is in progress.
+            if (!bsp_display_lock(50)) {
+                continue;
+            }
             lv_canvas_set_buffer(m_canvas, fb->buf, fb->width, fb->height, LV_COLOR_FORMAT_NATIVE);
             lv_obj_invalidate(m_canvas);
             if (m_lcd_disp_cb) {

@@ -2,8 +2,14 @@
 #include "human_face_detect.hpp"
 #include "who_lvgl_utils.hpp"
 #include "who_yield2idle.hpp"
+#include "driver/uart.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+
+static const char *TAG_FACE = "face";
 
 extern EventGroupHandle_t g_recog_event_group;
+extern portMUX_TYPE g_face_spinlock;  // global, app_main.cpp
 char g_last_recog_face[64] = "Unknown";
 
 LV_FONT_DECLARE(montserrat_bold_26);
@@ -142,12 +148,65 @@ bool WhoRecognitionAppLCD::run()
 void WhoRecognitionAppLCD::recognition_result_cb(const std::string &result)
 {
     if (m_text_result_lcd_disp) m_text_result_lcd_disp->save_text_result(result);
+    portENTER_CRITICAL(&g_face_spinlock);
     strncpy(g_last_recog_face, result.c_str(), sizeof(g_last_recog_face) - 1);
+    portEXIT_CRITICAL(&g_face_spinlock);
+
+    // Suppress noisy "Failed to recognize" warnings — caused by edge-cut
+    // faces after switching to ESPDET-PICO (different box output). The
+    // detector catches more faces including partial ones at frame edges.
+    if (result != "who?")
+        ESP_LOGI(TAG_FACE, "Recognition: %s", result.c_str());
+
+    // Report face recognition to server (via UART → S3 → HTTP)
+    int id = -1; float sim = 0;
+    if (sscanf(result.c_str(), "id: %d, sim: %f", &id, &sim) == 2) {
+        char buf[128];
+        int len = snprintf(buf, sizeof(buf),
+            "{\"device\":\"p4-voice\",\"event\":\"face_recognized\","
+            "\"user_id\":%d,\"sim\":%.3f}\n", id, sim);
+        if (len > 0 && len < (int)sizeof(buf)) uart_write_bytes(UART_NUM_1, buf, len);
+    } else if (result == "who?") {
+        const char *msg = "{\"device\":\"p4-voice\",\"event\":\"face_unknown\"}\n";
+        uart_write_bytes(UART_NUM_1, msg, strlen(msg));
+    }
 }
+
+/* ── Last-face cache (for recognition fallback) ───────────────
+ * When a voice command triggers RECOGNIZE, the recognition task
+ * replaces the detect callback and waits for the NEXT detection.
+ * If that frame has no face (timing jitter), recognition fails.
+ *
+ * This cache stores a deep copy of the most recent face crop.
+ * When RECOGNIZE fires and the fresh frame has no face, the
+ * cached face image can be fed to the recognizer directly.
+ * ─────────────────────────────────────────────────────────── */
 
 void WhoRecognitionAppLCD::detect_result_cb(const detect::WhoDetect::result_t &result)
 {
     if (m_detect_result_lcd_disp) m_detect_result_lcd_disp->save_detect_result(result);
+
+    // Throttled detection log: once per second max
+    static int64_t last_log_us = 0;
+    int64_t now = esp_timer_get_time();
+    if (now - last_log_us > 1000000) {
+        last_log_us = now;
+        int n = (int)result.det_res.size();
+        if (n > 0) {
+            char buf[256]; int pos = 0;
+            int count = 0;
+            for (auto &d : result.det_res) {
+                if (count >= 4) break;
+                pos += snprintf(buf + pos, sizeof(buf) - pos,
+                    "%s[%d,%d %dx%d s=%.2f]",
+                    count ? " " : "",
+                    d.box[0], d.box[1], d.box[2]-d.box[0], d.box[3]-d.box[1],
+                    (double)d.score);
+                count++;
+            }
+            ESP_LOGI(TAG_FACE, "Detect: %d face(s) %s", n, buf);
+        }
+    }
 }
 
 void WhoRecognitionAppLCD::lcd_disp_cb(who::cam::cam_fb_t *fb)

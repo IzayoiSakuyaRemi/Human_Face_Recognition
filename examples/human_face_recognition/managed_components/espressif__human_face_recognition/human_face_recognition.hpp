@@ -41,7 +41,8 @@ public:
     HumanFaceRecognizer(const std::string &db_path,
                         HumanFaceFeat::model_type_t model_type =
                             static_cast<HumanFaceFeat::model_type_t>(CONFIG_DEFAULT_HUMAN_FACE_FEAT_MODEL),
-                        bool lazy_load = true);
+                        bool lazy_load = true,
+                        float thr = 0.4f);  // lowered from 0.5 — all faces are same user
     ~HumanFaceRecognizer();
 
     std::vector<dl::recognition::result_t> recognize(const dl::image::img_t &img,

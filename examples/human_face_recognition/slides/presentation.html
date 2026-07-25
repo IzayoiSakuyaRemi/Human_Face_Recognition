@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WT99P4C5-S1 三模态边缘AI智能终端 — 嵌入式设计大赛</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<style>
+:root{--bg:#0a1628;--card:#111d32;--accent:#3b82f6;--accent2:#22c55e;--accent3:#f59e0b;--accent4:#a855f7;--accent5:#ef4444;--text:#e2e8f0;--muted:#94a3b8;--font:'Segoe UI',system-ui,sans-serif;--mono:'JetBrains Mono',monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font);background:var(--bg);color:var(--text);overflow:hidden}
+.slide{position:fixed;inset:0;display:none;flex-direction:column;padding:60px 80px;overflow-y:auto}
+.slide.active{display:flex}
+.slide-title{font-size:2.2em;font-weight:700;color:var(--accent);margin-bottom:12px;border-bottom:2px solid var(--accent);padding-bottom:10px}
+.slide-subtitle{font-size:1.1em;color:var(--muted);margin-bottom:30px}
+.content{flex:1;display:flex;flex-direction:column;gap:20px}
+.row{display:flex;gap:30px;flex:1}
+.col{flex:1;display:flex;flex-direction:column;gap:12px}
+.card{background:var(--card);border-radius:12px;padding:24px;border:1px solid rgba(255,255,255,0.08)}
+.card h3{color:var(--accent);font-size:1.15em;margin-bottom:8px}
+.card p,.card li{color:var(--muted);font-size:0.95em;line-height:1.6}
+.card ul{padding-left:20px}
+.card-accent2 h3{color:var(--accent2)}
+.card-accent3 h3{color:var(--accent3)}
+.card-accent4 h3{color:var(--accent4)}
+.card-accent5 h3{color:var(--accent5)}
+.tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.8em;font-weight:600;margin-right:6px}
+.tag-blue{background:rgba(59,130,246,0.2);color:var(--accent)}
+.tag-green{background:rgba(34,197,94,0.2);color:var(--accent2)}
+.tag-yellow{background:rgba(245,158,11,0.2);color:var(--accent3)}
+.tag-purple{background:rgba(168,85,247,0.2);color:var(--accent4)}
+.tag-red{background:rgba(239,68,68,0.2);color:var(--accent5)}
+.mermaid{background:var(--card);border-radius:12px;padding:20px;text-align:center}
+.mermaid svg{max-width:100%;height:auto}
+.big-num{font-size:3em;font-weight:800;color:var(--accent)}
+.big-num-unit{font-size:0.5em;color:var(--muted)}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.stat-card{background:var(--card);border-radius:12px;padding:20px;text-align:center;border:1px solid rgba(255,255,255,0.06)}
+.stat-card .value{font-size:2em;font-weight:700;color:var(--accent)}
+.stat-card .label{font-size:0.85em;color:var(--muted);margin-top:4px}
+.nav{position:fixed;bottom:24px;right:32px;z-index:100;display:flex;gap:8px}
+.nav button{background:var(--card);border:1px solid rgba(255,255,255,0.15);color:var(--text);padding:8px 18px;border-radius:8px;cursor:pointer;font-size:0.9em}
+.nav button:hover{background:var(--accent);border-color:var(--accent)}
+.page-indicator{position:fixed;bottom:28px;left:32px;z-index:100;color:var(--muted);font-size:0.85em}
+.title-slide{display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center}
+.title-slide .main-title{font-size:3em;font-weight:800;color:#fff;margin-bottom:16px;line-height:1.2}
+.title-slide .main-subtitle{font-size:1.4em;color:var(--accent);margin-bottom:40px}
+.title-slide .main-tags{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:40px}
+.title-slide .main-info{color:var(--muted);font-size:0.95em}
+table{width:100%;border-collapse:collapse;font-size:0.9em}
+th{background:rgba(59,130,246,0.2);color:var(--accent);padding:10px 14px;text-align:left;font-weight:600}
+td{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+.chip-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.chip-box{background:var(--card);border-radius:12px;padding:24px;border:1px solid rgba(255,255,255,0.08)}
+.chip-box.p4{border-left:4px solid var(--accent)}
+.chip-box.s3{border-left:4px solid var(--accent2)}
+.arrow-row{display:flex;align-items:center;gap:16px;margin:16px 0}
+.flow-step{background:var(--card);padding:10px 18px;border-radius:8px;font-size:0.9em;color:var(--muted)}
+.flow-arrow{color:var(--accent);font-size:1.2em}
+@media print{.slide{position:relative;page-break-after:always;display:flex!important}.nav{display:none}}
+</style>
+</head>
+<body>
+
+<!-- SLIDE 1: Title -->
+<div class="slide active title-slide">
+<div class="main-title">WT99P4C5-S1<br>三模态边缘AI智能终端</div>
+<div class="main-subtitle">人脸识别 · 声纹验证 · WiFi雷达感知 · 云端语音助手</div>
+<div class="main-tags">
+<span class="tag tag-blue">ESP32-P4 主处理器</span>
+<span class="tag tag-green">外接S3-N16R8 协处理器</span>
+<span class="tag tag-yellow">FreeRTOS 9任务</span>
+<span class="tag tag-purple">LVGL v9 三应用</span>
+<span class="tag tag-red">五类帧协议</span>
+</div>
+<div class="main-info">嵌入式设计大赛参赛作品 | K-Dense | 2026</div>
+</div>
+
+<!-- SLIDE 2: Background -->
+<div class="slide">
+<div class="slide-title">项目背景与动机</div>
+<div class="content">
+<div class="row">
+<div class="col">
+<div class="card"><h3>边缘AI核心挑战</h3>
+<ul><li>单芯片算力有限：视觉+语音+雷达难以共存</li><li>实时性要求：人脸识别<200ms，语音<100ms延迟</li><li>通信可靠性：双芯UART 921600bps高速数据流</li><li>内存管理：32MB PSRAM承载3个AI模型+LVGL</li></ul></div>
+<div class="card card-accent2"><h3>为什么双芯异构？</h3>
+<ul><li>P4(RISC-V 360MHz)：视觉DNN + 音频 + 显示</li><li>S3(Xtensa 240MHz)：WiFi CSI雷达 + 云端中继</li><li>板载C5因WiFi/CSI互斥被弃用</li><li>外接S3-N16R8模组：独立联网+雷达采集</li></ul></div>
+</div>
+<div class="col">
+<div class="card card-accent3"><h3>三模态融合</h3>
+<div class="mermaid">
+graph TB
+    A["👤 用户"] --> B["📷 人脸识别<br/>ESP-DL NN<br/>相似度>0.5"]
+    A --> C["🎤 声纹验证<br/>TDNN 512维<br/>余弦相似度>0.25"]
+    A --> D["📶 WiFi CSI雷达<br/>esp_radar<br/>穿墙人体感知"]
+    B --> E["P4 决策融合"]
+    C --> E
+    D --> E
+    E --> F["ALLOW / ALARM"]
+    E --> G["📊 Flask 看板"]
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 3: Hardware Architecture -->
+<div class="slide">
+<div class="slide-title">硬件架构 — 双芯异构</div>
+<div class="content">
+<div class="chip-grid">
+<div class="chip-box p4">
+<h3>🖥️ ESP32-P4 主处理器</h3>
+<table>
+<tr><td>架构</td><td>双核 RISC-V @ 360MHz</td></tr>
+<tr><td>内存</td><td>32MB Octal PSRAM + 16MB QIO Flash</td></tr>
+<tr><td>显示</td><td>MIPI DSI 4-lane → 1024×600 EK79007</td></tr>
+<tr><td>摄像头</td><td>MIPI CSI 2-lane → OV5647 500MP</td></tr>
+<tr><td>音频</td><td>I2S → ES8311 Codec (16kHz 16bit)</td></tr>
+<tr><td>触摸</td><td>I2C → GT911</td></tr>
+<tr><td>存储</td><td>SDSPI → SD卡 FAT</td></tr>
+<tr><td>网络</td><td>以太网PHY (仅SNTP)</td></tr>
+</table>
+</div>
+<div class="chip-box s3">
+<h3>📡 ESP32-S3-N16R8 协处理器</h3>
+<table>
+<tr><td>架构</td><td>双核 Xtensa LX7 @ 240MHz</td></tr>
+<tr><td>内存</td><td>8MB Octal PSRAM + 16MB Flash</td></tr>
+<tr><td>无线</td><td>WiFi 2.4GHz 802.11n</td></tr>
+<tr><td>雷达</td><td>CSI 混杂模式 → esp_radar</td></tr>
+<tr><td>语音</td><td>MQTT+TLS+UDP → Opus编解码</td></tr>
+<tr><td>上报</td><td>HTTP POST → Flask看板</td></tr>
+<tr><td>来源</td><td>外接模组 (板载C5弃用)</td></tr>
+<tr><td>引脚</td><td>TX=GPIO17 RX=GPIO18</td></tr>
+</table>
+</div>
+</div>
+<div style="background:var(--card);border-radius:12px;padding:16px;text-align:center;margin-top:8px">
+<span style="color:var(--accent);font-weight:700">UART1 921600bps</span>
+<span style="color:var(--muted);margin:0 12px">|</span>
+<span style="color:var(--muted)">P4 GPIO4→S3 GPIO18 (TX)</span>
+<span style="color:var(--muted);margin:0 12px">|</span>
+<span style="color:var(--muted)">P4 GPIO5→S3 GPIO17 (RX)</span>
+<span style="color:var(--muted);margin:0 12px">|</span>
+<span style="color:var(--muted)">杜邦线直连 · 共地</span>
+<span style="color:var(--muted);margin:0 12px">|</span>
+<span style="color:var(--accent2)">USB-C供电</span>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 4: Software Architecture -->
+<div class="slide">
+<div class="slide-title">软件架构 — FreeRTOS 双核9任务</div>
+<div class="content">
+<div class="mermaid">
+graph TB
+    subgraph P4["ESP32-P4 FreeRTOS"]
+        subgraph C1["Core 1"]
+            LVGL["taskLVGL · LVGL v9<br/>Brookesia Phone UI"]
+            XZ_M["xz_mic prio3<br/>Mic 512×2→Ring"]
+            XZ_S["xz_spk prio4<br/>Speaker Queue→I2S"]
+            BIN_TX["uart_bin_tx prio3<br/>PCM_UP→UART"]
+        end
+        subgraph C0["Core 0"]
+            VOICE["voice_cmd prio3<br/>MultiNet+声纹TDNN"]
+            UART_RX["uart_rx prio2<br/>五类帧解析+假帧过滤"]
+            RADAR_D["radar_disp prio2<br/>休眠/唤醒 GPIO20"]
+            TIMER["ESP Timer<br/>LVGL tick 5ms"]
+        end
+    end
+    subgraph S3["ESP32-S3-N16R8"]
+        RADAR["esp_radar<br/>CSI感知→P4上报"]
+        MQTT["MqttProtocol<br/>MQTT+TLS"]
+        AUDIO_S["AudioService<br/>Opus编解码"]
+        HTTP_R["reporter_task<br/>HTTP→Flask"]
+    end
+    UART_RX <-->|"UART1 921600"| S3
+    style P4 fill:#0d1b3e,stroke:#3b82f6,color:#e2e8f0
+    style S3 fill:#0d2e1a,stroke:#22c55e,color:#e2e8f0
+</div>
+<div class="row" style="margin-top:8px">
+<div class="card"><h3>App层</h3><p><span class="tag tag-blue">Camera</span>人脸+声纹门禁<br><span class="tag tag-green">XiaoZhi</span>云端语音助手<br><span class="tag tag-yellow">Settings</span>系统配置</p></div>
+<div class="card card-accent2"><h3>优先级设计</h3><p><b>prio4</b> Speaker 实时播放<br><b>prio3</b> Mic / Voice / UART TX<br><b>prio2</b> UART RX / Radar<br>同优先级→阻塞API让出CPU</p></div>
+<div class="card card-accent3"><h3>S3模块</h3><p>WiFi CSI雷达感知<br>MQTT+UDP语音中继<br>HTTP事件上报<br>仅采集预处理→P4决策</p></div>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 5: Communication Protocol -->
+<div class="slide">
+<div class="slide-title">通信协议 — 五类帧 + 防御性解析</div>
+<div class="content">
+<div class="row">
+<div class="col" style="flex:1.2">
+<div class="card"><h3>五类二进制帧</h3>
+<table>
+<tr><th>类型</th><th>首字节</th><th>方向</th><th>结构</th><th>用途</th></tr>
+<tr><td>JSON</td><td>0x01</td><td>双向</td><td>文本行 {\n</td><td>雷达/WiFi/事件</td></tr>
+<tr><td>PCM_UP</td><td>0x02</td><td>P4→S3</td><td>6B头+1920B+2B CRC</td><td>麦克风→云端</td></tr>
+<tr><td>PCM_DOWN</td><td>0x03</td><td>S3→P4</td><td>6B头+1920B+2B CRC</td><td>云端→扬声器</td></tr>
+<tr><td>CTRL</td><td>0x04</td><td>双向</td><td>4B头+JSON负载</td><td>模式切换/训练</td></tr>
+<tr><td>ADR018</td><td>0xC5</td><td>S3→P4</td><td>20B头+IQ数据</td><td>CSI雷达原始</td></tr>
+</table>
+</div>
+</div>
+<div class="col">
+<div class="card card-accent5"><h3>核心难点：0x03假帧攻击</h3>
+<p>PCM音频数据天然包含0x03字节（与PCM_DOWN帧头完全相同），逐字节解析产生海量假帧。</p></div>
+<div class="card card-accent2"><h3>三层防御</h3>
+<ol>
+<li><b>帧头预验证</b>：检测0x03→缓冲6字节→验证sample_count==960→确认才进入二进制模式</li>
+<li><b>边界检查</b>：bin_pos≥2048→丢弃</li>
+<li><b>长度上限约束</b>：bin_expected>2048→丢弃</li>
+</ol>
+<p style="margin-top:8px;color:var(--accent2)"><b>效果</b>：假帧率从数百次/秒→接近0，无需增加帧同步头或转义字符</p></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 6: Multi-modal Auth Flow -->
+<div class="slide">
+<div class="slide-title">多模态认证流程 — 人脸+声纹→ALLOW/ALARM</div>
+<div class="content">
+<div class="mermaid">
+sequenceDiagram
+    participant U as 用户
+    participant Mic as ES8311麦克风
+    participant MN as MultiNet引擎
+    participant Face as 人脸识别ESP-DL
+    participant Voice as 声纹验证TDNN
+    participant UI as Camera UI
+    participant R as 事件上报
+
+    U->>Mic: "打开门"
+    Mic->>MN: chunksize PCM/帧 (16kHz)
+    MN->>MN: detect() 累积置信度>0.35
+    MN-->>Face: cmd_id=3 RECOGNIZE事件
+    Face->>Face: 特征提取→DB查询(阈值0.5)
+    Face-->>MN: g_last_recog_face="id:1,sim:0.87"
+    MN->>Voice: 截取环形缓冲最后3s→48000采样点
+    Voice->>Voice: TDNN提取512维embedding
+    Voice->>Voice: DB verify_max_cosine(阈值0.25)
+    Voice-->>MN: best_user=0 best_score=0.83
+    MN->>MN: face_ok && voice_ok → authorized
+    MN->>UI: set_exec_text("ALLOW")
+    MN->>UI: face_app_show_auth("ALLOW",true)
+    MN->>R: report_event("voice_command",{cmd_id:3,result:"allow"})
+    R->>R: UART→S3→HTTP→Flask→SQLite
+</div>
+</div>
+</div>
+
+<!-- SLIDE 7: Cloud Voice Pipeline -->
+<div class="slide">
+<div class="slide-title">云端语音管道 — 全链路音频流</div>
+<div class="content">
+<div class="mermaid">
+sequenceDiagram
+    participant P4_M as P4 麦克风采集
+    participant Ring as PSRAM Ring[65536]
+    participant UART as UART1
+    participant S3_E as S3 Opus编码
+    participant Cloud as 小智云端
+    participant S3_D as S3 Opus解码
+    participant P4_S as P4 Speaker队列
+    participant Spk as ES8311扬声器
+
+    P4_M->>P4_M: I2S Read 512samples ×2
+    P4_M->>Ring: ring_write ×2
+    Ring->>Ring: avail>=960→ring_read
+    Ring->>UART: PCM_UP帧(1928B)
+
+    UART->>S3_E: PCM_UP
+    S3_E->>S3_E: NoAudioProcessor→OpusEncoder
+    S3_E->>Cloud: UDP加密
+
+    Cloud->>Cloud: STT→LLM→TTS
+    Cloud-->>S3_D: UDP Opus音频
+    S3_D->>S3_D: OpusDecoder→PCM
+    S3_D->>UART: PCM_DOWN帧(1928B)
+
+    UART->>P4_S: on_pcm_down_frame→xQueueSend
+    P4_S->>Spk: speaker_task prio4→I2S Write
+
+    Cloud-->>UART: MQTT JSON: STT/TTS/Emotion
+    UART->>P4_S: XiaoZhiApp→Emoji切换
+</div>
+</div>
+</div>
+
+<!-- SLIDE 8: Core Innovations -->
+<div class="slide">
+<div class="slide-title">核心创新点</div>
+<div class="content">
+<div class="row">
+<div class="col">
+<div class="card card-accent5"><h3>🛡️ 防御性帧解析器</h3><p>三层假帧过滤：6字节帧头预验证(sample_count==960)、bin_pos边界检查、bin_expected上限约束。不增加协议开销的前提下根治UART字节流误帧。15+次崩溃迭代定位，通过寄存器PCM采样值反推根因。</p></div>
+<div class="card card-accent2"><h3>🔗 多模态融合认证</h3><p>人脸(ESP-DL 相似度>0.5)+声纹(TDNN 512维 余弦>0.25)+WiFi CSI雷达穿墙感知。三模态数据统一汇聚P4决策，ALLOW/ALARM大字显示+HTTP实时上报。</p></div>
+<div class="card card-accent3"><h3>☁️ 边缘-云端分布式AI</h3><p>P4本地处理人脸+声纹(低延迟+隐私)。S3充当云端语音网关：MQTT+TLS+UDP加密+Opus编解码。512样本分块I2S读取匹配DMA缓冲，Speaker独立任务FreeRTOS队列解耦。</p></div>
+</div>
+<div class="col">
+<div class="card card-accent4"><h3>⚡ FreeRTOS优先级设计</h3><p>双核9任务：Speaker prio4(实时TTS)、Mic/Voice prio3、UART prio2。同优先级阻塞式API让出CPU。雷达10s无人GPIO20黑屏，移动/触摸唤醒→startApp(0)自动进入Camera。</p></div>
+<div class="card"><h3>💾 三模型PSRAM池化</h3><p>人脸(SPIFFS 4MB)+声纹(Flash)+特征库(SD)共享32MB PSRAM。MALLOC_CAP_SPIRAM统一分配。32KB内部DRAM预留DMA防止缓存一致性问题。Emoji 1.4MB预加载→零I/O切换。</p></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 9: Stability Design -->
+<div class="slide">
+<div class="slide-title">稳定性设计 — 15+崩溃迭代的工程经验</div>
+<div class="content">
+<div class="row">
+<div class="col">
+<div class="card card-accent5"><h3>典型崩溃：bin_buf溢出→LoadAccessFault</h3>
+<p>音频数据0x03字节误判为PCM_DOWN帧头→sample_count=随机大值→bin_expected远超2048→覆写s_frame_cbs函数指针→跳转垃圾地址→崩溃。</p>
+<p style="color:var(--accent5);margin-top:8px"><b>定位方法</b>：崩溃寄存器中全是PCM音频采样值→反向追出I2S TX DMA覆写内存→根因帧解析器而非驱动。</p></div>
+<div class="card card-accent2"><h3>I2S队列解耦</h3>
+<p>Speaker写入从UART回调剥离至独立任务(prio4)。UART回调仅xQueueSend(μs级)→避免I2S写入(~21ms)阻塞导致环形缓冲溢出→产生Frame too large级联误帧。</p></div>
+</div>
+<div class="col">
+<div class="card card-accent3"><h3>栈水位监控</h3>
+<table>
+<tr><th>任务</th><th>栈/已用</th><th>余量</th></tr>
+<tr><td>xz_mic</td><td>8192 / 5336</td><td>35%</td></tr>
+<tr><td>uart_rx</td><td>6144 / 2224</td><td>64%</td></tr>
+<tr><td>voice_cmd</td><td>8192 / 2164</td><td>74%</td></tr>
+<tr><td>uart_bin_tx</td><td>4096 / ~2100</td><td>49%</td></tr>
+</table></div>
+<div class="card card-accent4"><h3>持续运行验证</h3>
+<p>XiaoZhi模式30min+无崩溃<br>PCM_DOWN帧600+连续收发<br>false_hdr从数百→<10/min<br>Emoji 4/4预加载100%成功率</p></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 10: Application Scenarios -->
+<div class="slide">
+<div class="slide-title">应用场景</div>
+<div class="content">
+<div class="stats-grid" style="grid-template-columns:repeat(2,1fr)">
+<div class="stat-card" style="text-align:left;padding:28px">
+<div style="font-size:2em;margin-bottom:8px">🏠</div>
+<h3 style="color:var(--accent)">智能家居安防</h3>
+<p style="color:var(--muted);font-size:0.9em;margin-top:8px">人脸+声纹双重门禁<br>WiFi雷达闯入实时告警<br>语音控制灯光/电视<br>数据上报远程看板</p>
+</div>
+<div class="stat-card" style="text-align:left;padding:28px">
+<div style="font-size:2em;margin-bottom:8px">🏢</div>
+<h3 style="color:var(--accent2)">智慧办公</h3>
+<p style="color:var(--muted);font-size:0.9em;margin-top:8px">刷脸打卡签到<br>声纹确认高风险操作<br>会议室人体感知节能<br>AI助手查询日程天气</p>
+</div>
+<div class="stat-card" style="text-align:left;padding:28px">
+<div style="font-size:2em;margin-bottom:8px">👴</div>
+<h3 style="color:var(--accent3)">养老监护</h3>
+<p style="color:var(--muted);font-size:0.9em;margin-top:8px">雷达跌倒检测<br>紧急语音呼叫<br>非侵入式隐私保护<br>亲属远程查看活动</p>
+</div>
+<div class="stat-card" style="text-align:left;padding:28px">
+<div style="font-size:2em;margin-bottom:8px">🔬</div>
+<h3 style="color:var(--accent4)">教育/实验室</h3>
+<p style="color:var(--muted);font-size:0.9em;margin-top:8px">设备操作权限管控<br>语音记录实验步骤<br>危险区域闯入告警<br>人脸+声纹双因素认证</p>
+</div>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 11: Performance Metrics -->
+<div class="slide">
+<div class="slide-title">性能指标</div>
+<div class="content">
+<div class="row">
+<div class="col">
+<div class="stats-grid" style="grid-template-columns:repeat(2,1fr)">
+<div class="stat-card"><div class="value">>30min</div><div class="label">连续运行无崩溃</div></div>
+<div class="stat-card"><div class="value"><32KB</div><div class="label">内部DRAM DMA预留</div></div>
+<div class="stat-card"><div class="value"><100ms</div><div class="label">音频管道延迟</div></div>
+<div class="stat-card"><div class="value"><2s</div><div class="label">雷达感知延迟</div></div>
+<div class="stat-card"><div class="value"><1s</div><div class="label">屏幕唤醒响应</div></div>
+<div class="stat-card"><div class="value">1.37MB</div><div class="label">Emoji PSRAM预加载</div></div>
+<div class="stat-card"><div class="value">921K</div><div class="label">UART波特率(bps)</div></div>
+<div class="stat-card"><div class="value">128KB</div><div class="label">Mic环形缓冲</div></div>
+</div>
+</div>
+<div class="col">
+<div class="card card-accent2"><h3>AI模型指标</h3>
+<table>
+<tr><th>模型</th><th>阈值</th><th>存储</th></tr>
+<tr><td>人脸检测(ESP-DL)</td><td>-</td><td>SPIFFS 4MB</td></tr>
+<tr><td>人脸识别</td><td>相似度>0.5</td><td>SD卡 face.db</td></tr>
+<tr><td>声纹验证(TDNN)</td><td>余弦>0.25</td><td>Flash加载</td></tr>
+<tr><td>MultiNet语音命令</td><td>置信度>0.35</td><td>PSRAM</td></tr>
+</table></div>
+<div class="card card-accent3"><h3>修复前→修复后</h3>
+<table>
+<tr><th>问题</th><th>修复前</th><th>修复后</th></tr>
+<tr><td>崩溃频率</td><td>10-65s必崩</td><td>30min+稳定</td></tr>
+<tr><td>假帧率</td><td>数百/次TTS</td><td><10/min</td></tr>
+<tr><td>Frame too large</td><td>每次应答</td><td>接近0</td></tr>
+<tr><td>声纹识别率</td><td>~10%</td><td>>85%(AGC移除后)</td></tr>
+</table></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- SLIDE 12: Summary -->
+<div class="slide">
+<div class="slide-title">总结与展望</div>
+<div class="content">
+<div class="row">
+<div class="col">
+<div class="card"><h3>🏆 项目亮点</h3>
+<ul>
+<li><b>双芯异构</b>：P4决策+S3采集，五类帧协议921600bps可靠通信</li>
+<li><b>三模态融合</b>：人脸+声纹+雷达统一认证，ALLOW/ALARM大屏显示</li>
+<li><b>防御性帧解析</b>：三层假帧过滤，15+崩溃迭代定位根因</li>
+<li><b>分布式AI</b>：本地DNN+云端LLM，512样本分块匹配DMA缓冲</li>
+<li><b>优先级设计</b>：Speaker prio4实时TTS，I2S队列解耦防阻塞</li>
+<li><b>PSRAM池化</b>：三模型共享32MB，32KB DMA预留防缓存问题</li>
+</ul></div>
+</div>
+<div class="col">
+<div class="card card-accent2"><h3>🔮 可扩展方向</h3>
+<ul>
+<li>离线TTS：ESP-SR本地语音合成</li>
+<li>多模型路由：文心一言/通义千问</li>
+<li>双目立体视觉：3D人脸识别</li>
+<li>联邦学习：边缘端增量更新</li>
+<li>Zigbee/BLE Mesh：智能家居控制</li>
+<li>异常行为检测：CSI长期轨迹训练</li>
+<li>OTA远程升级：双芯HTTP OTA</li>
+<li>WebRTC推流：远程实时监控</li>
+</ul></div>
+</div>
+</div>
+<div style="background:var(--card);border-radius:12px;padding:20px;text-align:center;margin-top:8px">
+<span style="font-size:1.2em;color:var(--accent)">WT99P4C5-S1 三模态边缘AI智能终端</span><br>
+<span style="color:var(--muted)">嵌入式设计大赛参赛作品 | 2026</span>
+</div>
+</div>
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+<button onclick="prev()">◀ 上一页</button>
+<button onclick="next()">下一页 ▶</button>
+</div>
+<div class="page-indicator" id="page-indicator">1 / 12</div>
+
+<script>
+mermaid.initialize({startOnLoad:true,theme:'dark',securityLevel:'loose'});
+let current=0;
+const slides=document.querySelectorAll('.slide');
+const total=slides.length;
+function show(n){
+slides.forEach(s=>s.classList.remove('active'));
+slides[n].classList.add('active');
+document.getElementById('page-indicator').textContent=(n+1)+' / '+total;
+}
+function next(){current=(current+1)%total;show(current)}
+function prev(){current=(current-1+total)%total;show(current)}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' ')next();if(e.key==='ArrowLeft')prev()});
+</script>
+</body>
+</html>

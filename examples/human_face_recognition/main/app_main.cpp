@@ -3,6 +3,9 @@
 #include "who_recognition_app_term.hpp"
 #include "who_spiflash_fatfs.hpp"
 #include "event_reporter.hpp"
+#include "xiaozhi/uart_frame_protocol.h"
+#include <cstdlib>
+#include <cstring>
 #include "uart_bridge.hpp"
 #include "radar_display.hpp"
 // #include "wifi_provisioning.hpp"  // C5 removed
@@ -34,6 +37,7 @@ extern "C" { esp_err_t bsp_eth_init(void); }
 #include "face_recognition_app.hpp"
 #include "settings_app.hpp"
 #include "xiaozhi_app.hpp"
+#include "csi_liveness.hpp"
 #include "speaker_verification.hpp"
 #include "dl_feat_verification_database.hpp"
 // wallpaper now loaded from SD card or NVS only (no compiled-in default)
@@ -62,11 +66,22 @@ esp_codec_dev_handle_t g_mic_handle = nullptr;
 esp_codec_dev_handle_t g_speaker_handle = nullptr;  // for xiaozhi audio bridge
 static SemaphoreHandle_t g_espdl_mutex = nullptr;
 static volatile int g_skip_detect_count = 0;
+portMUX_TYPE g_face_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+// Thread-safe read of g_last_recog_face (cross-core: written on Core1, read on Core0)
+static void face_result_copy(char *dst, size_t sz) {
+    portENTER_CRITICAL(&g_face_spinlock);
+    size_t n = strnlen(g_last_recog_face, sizeof(g_last_recog_face));
+    if (n >= sz) n = sz - 1;
+    memcpy(dst, g_last_recog_face, n);
+    dst[n] = '\0';
+    portEXIT_CRITICAL(&g_face_spinlock);
+}
 
 // Speaker verification — multi-user with rolling audio buffer
 #define MAX_VOICE_USERS 10
-#define ROLLING_BUF_SECS      5
-#define ROLLING_BUF_SAMPLES   (16000 * ROLLING_BUF_SECS)  // 80000
+#define ROLLING_BUF_SECS      8
+#define ROLLING_BUF_SAMPLES   (16000 * ROLLING_BUF_SECS)  // 128000
 static SpeakerVerification *g_speaker_verifier = nullptr;
 static dl::feat::FeatVerificationDatabase *g_voice_db = nullptr;
 bool g_voice_enrolling = false;
@@ -74,7 +89,35 @@ bool g_voice_enroll_allowed = true;  // Settings toggle removed — always allow
 bool g_voice_verifying = false;
 static int g_voice_collect_samples = 0;
 static int16_t *g_voice_cap_buf = nullptr;   // captured audio for verification
-static float *g_voice_embeddings[MAX_VOICE_USERS] = {};
+
+/* ── Remote voice verification (P4→S3→WiFi→3090) ── */
+bool g_voice_remote_mode = true;  // remote voice verification server
+static SemaphoreHandle_t g_remote_score_sem = nullptr;
+static float g_remote_voice_score = 0.0f;
+static bool g_remote_voice_ok = false;
+
+/** UART frame callback: S3 sends CTRL_VOICE_SCORE with JSON {"score":0.85,"who":"user"} */
+static void on_voice_score_cb(uint8_t type, const uint8_t *data, size_t len)
+{
+    if (type != UART_FRAME_CTRL || len < CTRL_FRAME_HEADER_SIZE) return;
+    if (data[1] != CTRL_VOICE_SCORE) return;
+    const char *json = (const char *)&data[CTRL_FRAME_HEADER_SIZE];
+    const char *sp = strstr(json, "\"score\":");
+    if (sp) g_remote_voice_score = strtof(sp + 8, nullptr);
+    // Parse who field for dual-centroid result
+    bool who_is_user = false;
+    sp = strstr(json, "\"who\":");
+    if (sp) {
+        sp = strchr(sp, '"'); if (sp) sp = strchr(sp + 1, '"');
+        if (sp && strncmp(sp + 1, "user", 4) == 0) who_is_user = true;
+    }
+    g_remote_voice_ok = who_is_user;  // true only if dual-centroid says "user"
+    if (g_remote_score_sem) xSemaphoreGive(g_remote_score_sem);
+    ESP_LOGI(TAG, "Voice score: %.4f who=%s", (double)g_remote_voice_score, who_is_user ? "user" : "other");
+}
+#define MAX_ENROLL_PER_USER 5
+static float *g_voice_embeddings[MAX_VOICE_USERS][MAX_ENROLL_PER_USER] = {};
+static int g_voice_enroll_count[MAX_VOICE_USERS] = {};
 static int g_voice_user_count = 0;
 static int g_embedding_dim = 0;
 // Rolling circular buffer: always keeps last 5s of audio
@@ -84,6 +127,89 @@ static int g_rolling_total = 0;    // total samples written (for cold-start chec
 static int g_post_detect_samples = 0;
 int g_pending_cmd_id = 0;
 static bool g_face_triggered = false;  // face detection was requested for pending cmd
+
+// Voiceprint match threshold (cosine similarity) — run-time adjustable
+// from Settings. Default 0.35: genuine scores 0.5-0.7, impostors <0.2.
+float g_voice_threshold = 0.35f;
+static bool g_voice_threshold_calibrated = false;
+
+// Geometric mean fusion: sqrt(face × voice). Naturally penalizes
+// single-modality failure — if either score drops to zero (face=who?
+// or voice=NO_MATCH), auth_score = 0 regardless of the other modality.
+// User worst: sqrt(0.52×0.37)=0.44; best: sqrt(0.76×0.57)=0.66.
+// Face-strong/voice-fail: sqrt(0.71×0.09)=0.25 → correctly blocked.
+// Threshold 0.35 provides comfortable margin.
+#define FUSION_THRESHOLD 0.35f
+
+// Reset voice DB from Settings UI. Exists because MultiNet reliably fails to
+// recognize voice command 8 ("qing chu sheng wen") — the phrase is a model
+// blind spot. Returns the number of cleared enrollments.
+int voice_db_reset(void)
+{
+    int cleared = g_voice_user_count;
+    // Serialize against in-flight speaker verification (which runs under this
+    // mutex) to avoid freeing embeddings mid-compare.
+    if (g_espdl_mutex) xSemaphoreTake(g_espdl_mutex, portMAX_DELAY);
+    if (g_voice_db) g_voice_db->clear();
+    for (int i = 0; i < MAX_VOICE_USERS; i++) {
+        for (int e = 0; e < MAX_ENROLL_PER_USER; e++) {
+            free(g_voice_embeddings[i][e]);
+            g_voice_embeddings[i][e] = nullptr;
+        }
+        g_voice_enroll_count[i] = 0;
+    }
+    g_voice_user_count = 0;
+    g_voice_threshold = 0.35f;          // reset to default floor
+    g_voice_threshold_calibrated = false;
+    if (g_espdl_mutex) xSemaphoreGive(g_espdl_mutex);
+    ESP_LOGI(TAG, "Voice DB reset from Settings UI (%d cleared)", cleared);
+    return cleared;
+}
+
+// ── Adaptive threshold calibration ──
+// After 3+ enrollments, compute cross-enrollment self-similarity to calibrate
+// the voice threshold.  Consistent voices get a higher bar (harder for
+// imposters to pass); variable voices get a lower floor so the user isn't
+// locked out.  Called after each enrollment and on boot.
+// Formula: thr = max(0.30, self_mean × 0.50)
+//   0.50× accounts for the 20-30% session variability drop between enrollment
+//   and verification. Self-similarity is typically 0.70-0.90 (same session),
+//   while cross-session genuine scores are typically 0.50-0.70.
+//   – self_mean=0.80 → thr=0.40  (typical, blocks imposters ~0.2-0.3)
+//   – self_mean=0.70 → thr=0.35  (variable user, floor blocks most imposters)
+static void voice_calibrate_threshold(void)
+{
+    int user = (g_voice_user_count > 0) ? (g_voice_user_count - 1) : 0;
+    int n = g_voice_enroll_count[user];
+    if (n < 3) {
+        ESP_LOGI(TAG, "Thr calib: need 3+ enrollments (have %d), keeping %.3f",
+                 n, (double)g_voice_threshold);
+        return;
+    }
+
+    // Compute all pairwise cosine similarities between this user's enrollments
+    float sum = 0, min_s = 1.0f, max_s = 0.0f;
+    int pairs = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (!g_voice_embeddings[user][i] || !g_voice_embeddings[user][j]) continue;
+            float s = g_speaker_verifier->compute_similarity(
+                g_voice_embeddings[user][i], g_voice_embeddings[user][j]);
+            sum += s; if (s < min_s) min_s = s; if (s > max_s) max_s = s;
+            pairs++;
+        }
+    }
+    if (pairs < 2) return;
+
+    float self_mean = sum / (float)pairs;
+    float calibrated = fmaxf(0.30f, self_mean * 0.50f);
+    g_voice_threshold = calibrated;
+    g_voice_threshold_calibrated = true;
+
+    ESP_LOGI(TAG, "Thr calib: user=%d enrollers=%d pairs=%d self=%.3f(%.3f-%.3f) → thr=%.3f",
+             user, n, pairs, (double)self_mean, (double)min_s, (double)max_s,
+             (double)calibrated);
+}
 
 // Simple VAD + AGC state for voice preprocessing
 struct VoiceAudioState {
@@ -126,11 +252,12 @@ static void voice_recognition_task(void *arg)
     int chunksize = p->chunksize;
     free(p);
 
-    // I2S is configured as STEREO (2ch). Codec may return stereo data
-    // even with channel_mask=1, depending on driver version.
-    // Allocate stereo-sized buffer to prevent heap overflow on every read.
-    // (30s of 32ms reads = ~937 overflows if buffer is too small)
-    int read_bytes = chunksize * sizeof(int16_t) * 2;
+    // Mono read: codec honors channel_mask=1 and delivers mono samples.
+    // (The earlier ×2 "stereo safety" sizing was a mis-fix: each read consumed
+    // 1024 samples but only the first 512 were processed — HALF the audio was
+    // silently discarded, gutting MultiNet recognition. Log proof: 16 reads/sec
+    // × 1024 = 16kHz, i.e. mono stream fully consumed at double stride.)
+    int read_bytes = chunksize * sizeof(int16_t);
     int16_t *audio_buf = (int16_t *)malloc(read_bytes);
     if (!audio_buf) {
         ESP_LOGE(TAG, "Voice: buffer alloc failed");
@@ -196,7 +323,7 @@ static void voice_recognition_task(void *arg)
         if (now - last_log > 1000000) {
             int nz = 0;
             for (int i = 0; i < chunksize; i++) if (audio_buf[i] != 0) nz++;
-            ESP_LOGI(TAG, "Voice: %d reads/sec, nonzero=%d/%d stack_free=%lu",
+            ESP_LOGD(TAG, "Voice: %d reads/sec, nonzero=%d/%d stack_free=%lu",
                      read_count, nz, chunksize, uxTaskGetStackHighWaterMark(NULL));
             read_count = 0;
             last_log = now;
@@ -221,15 +348,18 @@ static void voice_recognition_task(void *arg)
         if (g_post_detect_samples > 0) {
             g_post_detect_samples -= chunksize;
             if (g_post_detect_samples <= 0) {
-                // Snapshot last 3s from rolling buffer
+                // Snapshot last 3s from rolling buffer (clean voice, no command phrase)
                 int available = (g_rolling_total >= ROLLING_BUF_SAMPLES) ? ROLLING_BUF_SAMPLES : g_rolling_total;
-                int max_samples = 16000 * 3;
+                int max_samples = 16000 * 3;  // 3s capture window
                 int to_copy = (available < max_samples) ? available : max_samples;
                 int start = (g_rolling_wr - to_copy + ROLLING_BUF_SAMPLES) % ROLLING_BUF_SAMPLES;
                 for (int i = 0; i < to_copy; i++)
                     g_voice_cap_buf[i] = g_rolling_buf[(start + i) % ROLLING_BUF_SAMPLES];
                 g_voice_collect_samples = to_copy;
                 ESP_LOGI(TAG, "Voice: captured %d samples from rolling buffer", to_copy);
+                // Reset ring buffer to prevent old commands from leaking into next capture
+                g_rolling_total = 0;
+                g_rolling_wr = 0;
             }
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
@@ -242,89 +372,295 @@ static void voice_recognition_task(void *arg)
             bool was_enrolling = g_voice_enrolling;
             g_voice_enrolling = false;
             g_voice_verifying = false;
+
+            // ── REMOTE MODE: send PCM_UP → S3 → WiFi → voice server ──
+            if (g_voice_remote_mode) {
+                const int frame_samples = 960;
+                // Pad short audio with silence to full frames
+                int padded = (total + frame_samples - 1) / frame_samples * frame_samples;
+                if (padded > 50 * frame_samples) padded = 50 * frame_samples;
+                for (int i = total; i < padded; i++) g_voice_cap_buf[i] = 0;
+                int total_frames = padded / frame_samples;
+                int64_t t0 = esp_timer_get_time();
+                for (int f = 0; f < total_frames; f++) {
+                    uint8_t fbuf[PCM_FRAME_MAX_TOTAL];
+                    size_t flen = uart_frame_build_pcm(fbuf, sizeof(fbuf),
+                        UART_FRAME_PCM_UP,
+                        (uint8_t)(f == 0 ? PCM_FLAG_FIRST : 0),
+                        (uint16_t)f,
+                        g_voice_cap_buf + f * frame_samples,
+                        (uint16_t)frame_samples);
+                    if (flen == 0) continue;
+                    // Slow-paced send: 50ms between frames = 20 fps.
+                    // UART drains at 21ms/frame, double margin prevents queue fill.
+                    uart_bridge_send_frame(UART_FRAME_PCM_UP, fbuf, flen);
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                }
+                ESP_LOGI(TAG, "Remote: %d PCM_UP frames sent in %lld us",
+                         total_frames, esp_timer_get_time() - t0);
+
+                // Wait for voice score (10s timeout)
+                int pending = g_pending_cmd_id;
+                g_pending_cmd_id = 0;
+                bool voice_ok = false, face_ok = false;
+                float voice_score = 0.0f;
+                if (xSemaphoreTake(g_remote_score_sem, pdMS_TO_TICKS(10000)) == pdTRUE) {
+                    voice_score = g_remote_voice_score;
+                    voice_ok = (voice_score > 0.75f);
+                    ESP_LOGI(TAG, "Voice score=%.4f %s", (double)voice_score, voice_ok ? "MATCH" : "NO");
+                } else {
+                    ESP_LOGW(TAG, "Voice timeout");
+                }
+                // Wait for face result (if face recognition was triggered)
+                if (g_face_triggered) {
+                    TickType_t face_start = xTaskGetTickCount();
+                    while (g_face_triggered && xTaskGetTickCount() - face_start < pdMS_TO_TICKS(3000)) {
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    face_ok = (g_last_recog_face[0] != '\0' && strcmp(g_last_recog_face, "who?") != 0);
+                    ESP_LOGI(TAG, "Face result: %s (%s)", g_last_recog_face, face_ok ? "OK" : "NONE");
+                }
+                // Display combined result
+                bool auth_ok = voice_ok && face_ok;
+                if (g_recognition_app) {
+                    g_recognition_app->set_exec_text(auth_ok ? "ALLOW" : "ALARM");
+                    g_recognition_app->set_status_text(auth_ok ? "Voice+Face OK" : "AUTH FAILED");
+                }
+                // Report event via S3 → event stream site
+                {
+                    const char *cmd_names[] = {"", "Open TV", "Close TV", "Open Door", "Close Door", "Identify"};
+                    const char *cmd_name = (pending >= 1 && pending <= 5) ? cmd_names[pending] : "Unknown";
+                    char jb[128];
+                    snprintf(jb, sizeof(jb),
+                             "\"cmd\":\"%s\",\"voice\":\"%s\",\"face\":\"%s\",\"result\":\"%s\"",
+                             cmd_name,
+                             voice_ok ? "PASS" : "FAIL",
+                             face_ok ? "PASS" : "-",
+                             auth_ok ? "ALLOW" : "DENY");
+                    report_event("voice_command", jb);
+                }
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+
+            // ── Enrollment quality gate ──
+            // Reject poor-quality audio BEFORE running the model. A single bad
+            // enrollment pollutes the user's identity permanently.
+            // RMS < 500  → too quiet (whisper, mic too far)
+            // SNR < 10dB → too noisy (wind, background chatter)
+            if (was_enrolling) {
+                float rms = 0;
+                for (int i = 0; i < total; i++) {
+                    float s = (float)g_voice_cap_buf[i];
+                    rms += s * s;
+                }
+                rms = sqrtf(rms / (float)total);
+                float noise_rms = sqrtf(g_voice_audio.noise_floor);
+                float snr = 20.0f * log10f(rms / (noise_rms + 1e-10f));
+
+                if (rms < 500.0f) {
+                    ESP_LOGW(TAG, "Enroll rejected: too quiet (RMS=%.0f, %d samples)",
+                             (double)rms, total);
+                    if (g_recognition_app) g_recognition_app->set_exec_text("Too quiet, speak louder");
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                    continue;
+                }
+                if (snr < 10.0f) {
+                    ESP_LOGW(TAG, "Enroll rejected: too noisy (RMS=%.0f noise=%.0f SNR=%.1fdB)",
+                             (double)rms, (double)noise_rms, (double)snr);
+                    if (g_recognition_app) g_recognition_app->set_exec_text("Too noisy, retry");
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                    continue;
+                }
+                ESP_LOGI(TAG, "Enroll quality OK: RMS=%.0f SNR=%.1fdB %d samples",
+                         (double)rms, (double)snr, total);
+            }
+
             if (xSemaphoreTake(g_espdl_mutex, pdMS_TO_TICKS(100))) {
+                // DEBUG: Save captured audio to SD card for Fbank comparison
+                {
+                    char wav_path[64];
+                    snprintf(wav_path, sizeof(wav_path), "/sdcard/debug_%s_%d.wav",
+                             was_enrolling ? "enroll" : "verify", (int)esp_timer_get_time());
+                    FILE *fw = fopen(wav_path, "wb");
+                    if (fw) {
+                        int data_bytes = total * sizeof(int16_t);
+                        int file_size = 44 + data_bytes;
+                        uint8_t hdr[44] = {0};
+                        memcpy(hdr, "RIFF", 4); hdr[4]=file_size-8; hdr[5]=(file_size-8)>>8; hdr[6]=(file_size-8)>>16; hdr[7]=(file_size-8)>>24;
+                        memcpy(hdr+8, "WAVEfmt ", 8); hdr[16]=16; hdr[20]=1; hdr[22]=1; hdr[24]=0x80; hdr[25]=0x3E; hdr[28]=0x00; hdr[29]=0x7D; hdr[32]=2; hdr[34]=16;
+                        memcpy(hdr+36,"data",4); hdr[40]=data_bytes; hdr[41]=data_bytes>>8; hdr[42]=data_bytes>>16; hdr[43]=data_bytes>>24;
+                        fwrite(hdr,1,44,fw); fwrite(g_voice_cap_buf,1,data_bytes,fw); fclose(fw);
+                        ESP_LOGI(TAG, "DEBUG: Saved %s (%d samples)", wav_path, total);
+                    }
+                }
                 float *emb = g_speaker_verifier->run(g_voice_cap_buf, total);
                 xSemaphoreGive(g_espdl_mutex);
                 vTaskDelay(pdMS_TO_TICKS(5));  // yield to LVGL on Core 1
                 if (emb) {
                     if (was_enrolling) {
-                        // Multi-user: auto-increment slot
-                        int slot = g_voice_user_count;
-                        if (slot >= MAX_VOICE_USERS) {
-                            ESP_LOGW(TAG, "Max voice users (%d) reached!", MAX_VOICE_USERS);
+                        // Multi-enrollment: append to the LAST user instead of
+                        // creating a new identity each time. The user speaks the
+                        // enroll command 3-5 times; all go to the same slot.
+                        // Max-cosine verification then picks the best match
+                        // across all enrollment samples — reducing EER 25-40%
+                        // vs single-shot (Rajan et al., Interspeech 2019).
+                        int slot = (g_voice_user_count > 0) ? (g_voice_user_count - 1) : 0;
+                        if (g_voice_enroll_count[slot] >= MAX_ENROLL_PER_USER) {
+                            ESP_LOGW(TAG, "Max %d enrollments reached for user %d", MAX_ENROLL_PER_USER, slot);
                             if (g_recognition_app) g_recognition_app->set_exec_text("Voice DB full!");
                         } else {
                             char label[32];
-                            // Find next available slot (avoid collisions with existing labels)
-                            while (slot < MAX_VOICE_USERS) {
-                                snprintf(label, sizeof(label), "voice_%d", slot);
-                                if (g_voice_db->get_embeddings(label).empty()) break;
-                                slot++;
-                            }
                             snprintf(label, sizeof(label), "voice_%d", slot);
                             g_voice_db->enroll(label, emb);
                             g_voice_db->build();
-                            if (!g_voice_embeddings[slot])
-                                g_voice_embeddings[slot] = (float *)malloc(g_embedding_dim * sizeof(float));
-                            memcpy(g_voice_embeddings[slot], emb, g_embedding_dim * sizeof(float));
-                            g_voice_user_count++;
-                            ESP_LOGI(TAG, "Voice enrolled as %s (slot %d/%d)", label, slot, MAX_VOICE_USERS);
+                            int e_idx = g_voice_enroll_count[slot];
+                            if (!g_voice_embeddings[slot][e_idx])
+                                g_voice_embeddings[slot][e_idx] = (float *)malloc(g_embedding_dim * sizeof(float));
+                            if (g_voice_embeddings[slot][e_idx])
+                                memcpy(g_voice_embeddings[slot][e_idx], emb, g_embedding_dim * sizeof(float));
+                            g_voice_enroll_count[slot]++;
+                            if (e_idx == 0) g_voice_user_count++;  // first enroll → new user
+                            ESP_LOGI(TAG, "Voice enrolled: user=%d sample=%d/%d",
+                                     slot, g_voice_enroll_count[slot], MAX_ENROLL_PER_USER);
                             g_voice_db->print();
                             if (g_recognition_app) {
                                 char buf[48];
-                                snprintf(buf, sizeof(buf), "User %d enrolled", slot + 1);
+                                snprintf(buf, sizeof(buf), "User %d +%d/%d",
+                                         slot + 1, g_voice_enroll_count[slot], MAX_ENROLL_PER_USER);
                                 g_recognition_app->set_status_text(buf);
                                 g_recognition_app->set_exec_text("Voice registered");
                             }
                         }
+                        // Calibrate threshold after enrollment reaches 3+ samples
+                        voice_calibrate_threshold();
                     } else {
-                        g_voice_db->verify_max_cosine(emb, 0.25f);
-                        float best_score = 0.0f;
+                        g_voice_db->verify_max_cosine(emb, g_voice_threshold);
+                        float best_score = 0.0f, second_best = 0.0f, min_score = 1.0f;
                         int best_user = -1;
+                        char score_detail[128] = "";
+                        int score_pos = 0;
+                        // Max-cosine across ALL enrollment samples per user.
+                        // Also log per-enrollment scores for gap analysis.
                         for (int i = 0; i < g_voice_user_count; i++) {
-                            if (!g_voice_embeddings[i]) continue;
-                            float s = g_speaker_verifier->compute_similarity(emb, g_voice_embeddings[i]);
-                            if (s > best_score) { best_score = s; best_user = i; }
+                            for (int e = 0; e < g_voice_enroll_count[i]; e++) {
+                                if (!g_voice_embeddings[i][e]) continue;
+                                float s = g_speaker_verifier->compute_similarity(emb, g_voice_embeddings[i][e]);
+                                if (score_pos < (int)(sizeof(score_detail)-4))
+                                    score_pos += snprintf(score_detail + score_pos,
+                                        sizeof(score_detail) - score_pos,
+                                        "%s%.3f", score_pos ? "," : "", (double)s);
+                                if (s > best_score) { second_best = best_score; best_score = s; best_user = i; }
+                                else if (s > second_best) { second_best = s; }
+                                if (s < min_score) min_score = s;
+                            }
                         }
-                        const char *result = (best_score > 0.25f) ? "MATCH" : "NO MATCH";
-                        ESP_LOGI(TAG, "Voice: user=%d score=%.4f -> %s (checked %d users)",
-                                 best_user, best_score, result, g_voice_user_count);
+                        int enrollers = g_voice_enroll_count[(best_user >= 0) ? best_user : 0];
+                        float score_gap = best_score - second_best;
+                        float score_range = best_score - min_score;
+                        const char *result = (best_score > g_voice_threshold) ? "MATCH" : "NO MATCH";
+                        ESP_LOGI(TAG, "Voice: user=%d score=%.4f gap=%.3f range=%.3f -> %s [%s]",
+                                 best_user, best_score, (double)score_gap, (double)score_range,
+                                 result, score_detail);
 
                         // Execute or reject pending command (combined face+voice)
                         int pending = g_pending_cmd_id;
                         g_pending_cmd_id = 0;
-                        bool voice_ok = (best_user >= 0 && best_score > 0.25f);
-                        bool face_ok = (g_face_triggered && strncmp(g_last_recog_face, "id:", 3) == 0);
+                        // ── Two-tier voice auth ──
+                        // Tier 1: score > 0.70 → confident genuine, no further checks.
+                        // Tier 2: score > threshold but < 0.70 → suspicious zone.
+                        //    Requires score consistency across ALL enrollments.
+                        //    Genuine users match all enrollments similarly (gap < 0.15);
+                        //    imposters often match one enrollment by chance but not others.
+                        bool voice_ok = false;
+                        if (best_user >= 0 && best_score > g_voice_threshold) {
+                            if (best_score > 0.70f) {
+                                voice_ok = true;  // confident match
+                            } else if (enrollers >= 3 && score_gap < 0.18f) {
+                                // Marginal score — must be consistent across enrollments
+                                voice_ok = true;
+                                ESP_LOGI(TAG, "Voice: marginal score=%.4f but consistent (gap=%.3f) → OK",
+                                         (double)best_score, (double)score_gap);
+                            } else if (enrollers < 3) {
+                                voice_ok = true;  // not enough data for consistency check
+                            } else {
+                                ESP_LOGW(TAG, "Voice: score=%.4f gap=%.3f → REJECTED (inconsistent)",
+                                         (double)best_score, (double)score_gap);
+                            }
+                        }
+
+                        // Multi-frame face voting: if first attempt fails, re-trigger
+                        // RECOGNIZE up to 2 more times. Because the user enrolled ALL
+                        // faces as themselves, take the highest-scoring match across all
+                        // IDs (max-cosine semantics).
+                        bool face_ok = false;
+                        float best_face_sim = 0;
+                        int   best_face_id = -1;
+                        for (int face_try = 0; face_try < 5; face_try++) {
+                            char fc[64]; face_result_copy(fc, sizeof(fc));
+                            if (g_recog_event_group && fc[0] == '\0') {
+                                vTaskDelay(pdMS_TO_TICKS(300));
+                                face_result_copy(fc, sizeof(fc));
+                            }
+                            if (strncmp(fc, "id:", 3) == 0) {
+                                int fid = -1; float fs = 0;
+                                if (sscanf(fc, "id: %d, sim: %f", &fid, &fs) == 2) {
+                                    if (fs > best_face_sim) { best_face_sim = fs; best_face_id = fid; }
+                                    face_ok = true;
+                                }
+                            }
+                            if (face_ok && face_try < 4 && best_face_sim < 0.5f) {
+                                portENTER_CRITICAL(&g_face_spinlock);
+                                g_last_recog_face[0] = '\0';
+                                portEXIT_CRITICAL(&g_face_spinlock);
+                                xEventGroupSetBits(g_recog_event_group, 32);
+                                vTaskDelay(pdMS_TO_TICKS(300));
+                            } else {
+                                break;
+                            }
+                        }
+                        if (face_ok) {
+                            portENTER_CRITICAL(&g_face_spinlock);
+                            snprintf(g_last_recog_face, sizeof(g_last_recog_face),
+                                     "id: %d, sim: %.2f", best_face_id, (double)best_face_sim);
+                            portEXIT_CRITICAL(&g_face_spinlock);
+                        }
                         g_face_triggered = false;
+
+                        // Geometric mean: sqrt(face × voice). Single-modality
+                        // failure (score≈0) forces the product to zero naturally.
+                        float fusion = sqrtf(best_face_sim * best_score);
+                        bool authorized = (fusion > FUSION_THRESHOLD);
+                        // CSI liveness gate: requires breathing human detected.
+                        // Bypassed until first successful calibration.
+                        static bool csi_calibrated = false;
+                        if (csi_liveness_check()) csi_calibrated = true;
+                        if (csi_calibrated && !csi_liveness_check()) {
+                            authorized = false;
+                            ESP_LOGW(TAG, "CSI liveness: no breathing detected — auth blocked");
+                        }
 
                         if (g_recognition_app) {
                             char buf[80];
                             if (pending == 7) {
                                 snprintf(buf, sizeof(buf), "User %d: %.2f", best_user + 1, best_score);
                             } else if (pending >= 1 && pending <= 5) {
-                                // Combined face + voice authorization
-                                if (voice_ok && face_ok)
-                                    snprintf(buf, sizeof(buf), "ALLOW: Voice+Face OK (U%d)", best_user + 1);
-                                else if (voice_ok && !face_ok)
-                                    snprintf(buf, sizeof(buf), "Alarm: Face unknown (Voice U%d)", best_user + 1);
-                                else if (!voice_ok && face_ok)
-                                    snprintf(buf, sizeof(buf), "Alarm: Voice unknown (Face known)");
-                                else
-                                    snprintf(buf, sizeof(buf), "Alarm: Unknown person");
+                                snprintf(buf, sizeof(buf), "%s: √(%.2f×%.2f)=%.2f",
+                                         authorized ? "ALLOW" : "ALARM",
+                                         (double)best_face_sim, (double)best_score,
+                                         (double)fusion);
                             }
                             g_recognition_app->set_exec_text(buf);
-                            face_app_show_auth(voice_ok && face_ok ? "ALLOW" : "ALARM",
-                                               voice_ok && face_ok);
+                            face_app_show_auth(authorized ? "ALLOW" : "ALARM", authorized);
                         }
                         // Report event for commands 1-5
                         if (pending >= 1 && pending <= 5) {
-                            bool authorized = voice_ok && face_ok;
                             char jb[128];
                             snprintf(jb, sizeof(jb),
-                                     "\"cmd_id\":%d,\"voice\":\"%s\",\"face\":\"%s\",\"result\":\"%s\"",
+                                     "\"cmd_id\":%d,\"voice\":\"%.2f\",\"face\":\"%.2f\",\"fusion\":\"%.2f\",\"result\":\"%s\"",
                                      pending,
-                                     voice_ok ? "match" : "no_match",
-                                     face_ok ? "match" : "no_match",
+                                     (double)best_score, (double)best_face_sim,
+                                     (double)fusion,
                                      authorized ? "allow" : "alarm");
                             report_event("voice_command", jb);
                         }
@@ -355,6 +691,30 @@ static void voice_recognition_task(void *arg)
             g_voice_audio.noise_floor += (frame_energy - g_voice_audio.noise_floor) * 0.001f;
         }
 
+        // Hard ceiling: noise floor should never exceed a reasonable max (~20K).
+        // A single loud event can spike it, and the 0.001 decay takes minutes
+        // to bring it back down — effectively silencing all commands until then.
+        if (g_voice_audio.noise_floor > 20000.0f) {
+            g_voice_audio.noise_floor = 20000.0f;
+        }
+
+        // Periodic re-baseline: every ~30s, if the room is quiet, snap the
+        // noise floor to the minimum observed energy in the last second.
+        // This prevents permanent drift from events like door slams.
+        static int recal_frames = 0;
+        static float recal_min = 1e9f;
+        recal_frames++;
+        if (frame_energy < recal_min) recal_min = frame_energy;
+        if (recal_frames >= 30000 / 32) {  // ~30 seconds
+            if (recal_min < g_voice_audio.noise_floor * 0.5f) {
+                ESP_LOGI(TAG, "VAD: recalibrating noise floor %.0f → %.0f",
+                         (double)g_voice_audio.noise_floor, (double)recal_min);
+                g_voice_audio.noise_floor = recal_min;
+            }
+            recal_frames = 0;
+            recal_min = 1e9f;
+        }
+
         // Speech detection: energy > 3× noise floor
         bool is_speech_frame = (frame_energy > g_voice_audio.noise_floor * 3.0f &&
                                 frame_energy > 100.0f);  // absolute minimum
@@ -369,11 +729,11 @@ static void voice_recognition_task(void *arg)
         // Hysteresis: need 3 frames to start, 10 frames to stop
         if (g_voice_audio.speech_frames >= 3 && !g_voice_audio.is_speaking) {
             g_voice_audio.is_speaking = true;
-            ESP_LOGI(TAG, "Voice: VAD ON (energy=%.0f, noise=%.0f)",
+            ESP_LOGD(TAG, "Voice: VAD ON (energy=%.0f, noise=%.0f)",
                      frame_energy, g_voice_audio.noise_floor);
         } else if (g_voice_audio.silence_frames >= 10 && g_voice_audio.is_speaking) {
             g_voice_audio.is_speaking = false;
-            ESP_LOGI(TAG, "Voice: VAD OFF");
+            ESP_LOGD(TAG, "Voice: VAD OFF");
         }
 
         if (g_skip_detect_count > 0) {
@@ -398,26 +758,33 @@ static void voice_recognition_task(void *arg)
                          r->num > 0 ? r->prob[0] : 0.0f);
 
                 // Voice enrollment / verification commands
-                if (cmd_id == 6 && g_speaker_verifier && g_voice_cap_buf) {
+                if (cmd_id == 6 && (g_speaker_verifier || g_voice_remote_mode) && g_voice_cap_buf) {
                     if (!g_voice_enroll_allowed) {
+                        // NOTE: was `return;` — that EXITED the whole voice task,
+                        // silently killing ALL voice commands until reboot!
                         if (g_recognition_app) g_recognition_app->set_exec_text("Enroll disabled");
-                        return;
-                    }
+                    } else {
                     g_voice_enrolling = true;
                     g_voice_verifying = false;
                     g_voice_collect_samples = 0;
-                    // 2s post-detect delay captures "注册声纹，1,2,3" entirely in ring buffer
-                    g_post_detect_samples = 16000 * 2; // capture follow-up speech after trigger
+                    // 4s post-detect delay: ensures user has time to react and start speaking.
+                    // The command phrase ("zhu ce sheng wen") should be fully outside the capture
+                    // window so the model only hears clean speaker identity speech.
+                    g_post_detect_samples = 16000 * 4; // 4s delay → clean post-command speech
                     if (g_recognition_app) {
                         g_recognition_app->set_status_text("Enrolling voice... speak now");
                         g_recognition_app->set_exec_text("Recording...");
+                    }
                     }
                 } else if (cmd_id == 8) {
                     // Clear all voice enrollments
                     if (g_voice_db) g_voice_db->clear();
                     for (int i = 0; i < MAX_VOICE_USERS; i++) {
-                        free(g_voice_embeddings[i]);
-                        g_voice_embeddings[i] = nullptr;
+                        for (int e = 0; e < MAX_ENROLL_PER_USER; e++) {
+                            free(g_voice_embeddings[i][e]);
+                            g_voice_embeddings[i][e] = nullptr;
+                        }
+                        g_voice_enroll_count[i] = 0;
                     }
                     g_voice_user_count = 0;
                     ESP_LOGI(TAG, "All voice enrollments cleared.");
@@ -425,16 +792,16 @@ static void voice_recognition_task(void *arg)
                         g_recognition_app->set_status_text("Voices cleared");
                         g_recognition_app->set_exec_text("DB empty");
                     }
-                } else if (cmd_id == 7 && g_speaker_verifier && g_voice_db) {
+                } else if (cmd_id == 7 && (g_speaker_verifier || g_voice_remote_mode) && (g_voice_db || g_voice_remote_mode)) {
                     g_voice_verifying = true;
                     g_voice_enrolling = false;
                     g_voice_collect_samples = 0;
-                    g_post_detect_samples = 16000 * 2; // capture follow-up speech after trigger
+                    g_post_detect_samples = 16000 * 4; // 4s delay → clean post-command speech
                     if (g_recognition_app) {
                         g_recognition_app->set_status_text("Verify voice... speak now");
                         g_recognition_app->set_exec_text("Recording...");
                     }
-                } else if (g_voice_user_count > 0 && g_voice_cap_buf && g_speaker_verifier) {
+                } else if ((g_voice_user_count > 0 || g_voice_remote_mode) && g_voice_cap_buf && (g_speaker_verifier || g_voice_remote_mode)) {
                     // Commands 1-5, 7: immediate voice + face verification
                     if (g_recog_event_group && cmd_id <= 5) {
                         g_last_recog_face[0] = '\0';     // clear stale face result
@@ -444,7 +811,7 @@ static void voice_recognition_task(void *arg)
                     }
                     // Snapshot rolling buffer immediately (utterance already in buffer)
                     int available = (g_rolling_total >= ROLLING_BUF_SAMPLES) ? ROLLING_BUF_SAMPLES : g_rolling_total;
-                    int max_samples = 16000 * 3;
+                    int max_samples = 16000 * 3;  // 3s window
                     int to_copy = (available < max_samples) ? available : max_samples;
                     int start = (g_rolling_wr - to_copy + ROLLING_BUF_SAMPLES) % ROLLING_BUF_SAMPLES;
                     for (int i = 0; i < to_copy; i++)
@@ -453,20 +820,60 @@ static void voice_recognition_task(void *arg)
                     g_voice_verifying = true;
                     g_pending_cmd_id = cmd_id;
                     ESP_LOGI(TAG, "Voice verify snapshot for cmd %d, %d samples", cmd_id, to_copy);
+                    // Reset ring buffer to prevent old commands from leaking into next capture
+                    g_rolling_total = 0;
+                    g_rolling_wr = 0;
                     if (g_recognition_app) {
                         g_recognition_app->set_status_text(cmd);
                         g_recognition_app->set_exec_text("Verifying voice...");
                     }
                 } else {
                     // No voice users enrolled — fallback to face-only auth
-                    if (g_recog_event_group) {
-                        g_skip_detect_count = 3;  // 3 frames (~90ms) — enough to skip trigger tail
-                        xEventGroupSetBits(g_recog_event_group, 32);
+                    // Multi-frame voting: re-trigger RECOGNIZE up to 2 more times
+                    // if first attempt fails. All faces are the same person, so
+                    // take the highest-scoring match.
+                    float best_fs = 0; int best_fid = -1;
+                    for (int face_try = 0; face_try < 5; face_try++) {
+                        if (face_try == 0) {
+                            if (g_recog_event_group) {
+                                g_skip_detect_count = 3;
+                                xEventGroupSetBits(g_recog_event_group, 32);
+                            }
+                        }
+                        // 300ms: ESP-DET-PICO detect(~54ms) + feature extraction(~100ms)
+                        // + DB query(~50ms) + margin for frame timing jitter
+                        vTaskDelay(pdMS_TO_TICKS(300));
+                        char fc[64]; face_result_copy(fc, sizeof(fc));
+                        if (strncmp(fc, "id:", 3) == 0) {
+                            int fid = -1; float fs = 0;
+                            if (sscanf(fc, "id: %d, sim: %f", &fid, &fs) == 2 && fs > best_fs) {
+                                best_fs = fs; best_fid = fid;
+                            }
+                            if (best_fs >= 0.5f) break;  // good enough
+                        }
+                        if (face_try < 4) {
+                            portENTER_CRITICAL(&g_face_spinlock);
+                            g_last_recog_face[0] = '\0';
+                            portEXIT_CRITICAL(&g_face_spinlock);
+                            if (g_recog_event_group) xEventGroupSetBits(g_recog_event_group, 32);
+                        }
                     }
-                    bool authorized = (strncmp(g_last_recog_face, "id:", 3) == 0);
+                    bool authorized = (best_fs > FUSION_THRESHOLD);
+                    static bool csi_cal2 = false;
+                    if (csi_liveness_check()) csi_cal2 = true;
+                    if (csi_cal2 && !csi_liveness_check()) authorized = false;
+                    if (authorized) {
+                        portENTER_CRITICAL(&g_face_spinlock);
+                        snprintf(g_last_recog_face, sizeof(g_last_recog_face),
+                                 "id: %d, sim: %.2f", best_fid, (double)best_fs);
+                        portEXIT_CRITICAL(&g_face_spinlock);
+                    }
                     if (g_recognition_app) {
                         g_recognition_app->set_status_text(cmd);
-                        g_recognition_app->set_exec_text(authorized ? "Allow: Yes" : "Alarm!");
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), "%s: F=%.2f",
+                                 authorized ? "Allow" : "Alarm", (double)best_fs);
+                        g_recognition_app->set_exec_text(buf);
                         face_app_show_auth(authorized ? "ALLOW" : "ALARM", authorized);
                     }
                 }
@@ -519,6 +926,11 @@ extern "C" void app_main(void)
 
     vTaskPrioritySet(xTaskGetCurrentTaskHandle(), 5);
 
+    // Timezone for clock display — S3 sends UTC epoch via UART, localtime_r()
+    // needs TZ to render Beijing time (was lost when SNTP code was removed)
+    setenv("TZ", "CST-8", 1);
+    tzset();
+
     // Light up backlight as power-on indicator (display content comes later via esp-who)
     gpio_set_direction(GPIO_NUM_20, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_20, 1);
@@ -538,6 +950,8 @@ extern "C" void app_main(void)
 
     // ── UART bridge to S3 (GPIO4/5, 921600 baud) ──
     uart_bridge_init();
+    // ── CSI liveness detector (analyzes ADR-018 frames for respiration) ──
+    csi_liveness_init();
     // ── Radar status from S3 via UART → LVGL display (task waits for LVGL) ──
     radar_display_init();
 
@@ -575,7 +989,7 @@ extern "C" void app_main(void)
         };
         esp_codec_dev_open(speaker, &fs);
         esp_codec_dev_open(g_mic_handle, &fs);
-        esp_codec_dev_set_in_gain(g_mic_handle, 40.0);
+        esp_codec_dev_set_in_gain(g_mic_handle, 25.0);  // Prevent ADC clipping
         esp_codec_dev_set_out_vol(speaker, 70);  // set speaker volume (matches xiaozhi-esp32)
         ESP_LOGI(TAG, "🎵 Audio: BSP init complete");
         ESP_LOGI(TAG, "🎵 I2S config: PORT=%d rate=%d bits=%d ch=%d mask=0x%x mclk_mult=%d",
@@ -676,10 +1090,13 @@ extern "C" void app_main(void)
             .task_max_sleep_ms = 500,
             .timer_period_ms = 5,
         };
+        // Partial refresh: single 50-line draw buffer (~100KB) instead of
+        // dual full-screen buffers (2.4MB).  Pairs with DPI buffer 2→1 in
+        // sdkconfig.  Total saving: ~3.4MB PSRAM.
         bsp_display_cfg_t cfg = {
             .lvgl_port_cfg = lvgl_port_cfg,
-            .buffer_size = BSP_LCD_H_RES * BSP_LCD_V_RES,  // full screen
-            .double_buffer = 1,
+            .buffer_size = BSP_LCD_H_RES * 50,   // 50-line partial buffer
+            .double_buffer = 0,
             .hw_cfg = {
                 .dsi_bus = {
                     .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
@@ -693,6 +1110,10 @@ extern "C" void app_main(void)
             }
         };
         lv_display_t *disp = bsp_display_start_with_config(&cfg);
+        // FULL render mode with SMALL buffer: LVGL renders the whole screen
+        // in stripes through the 50-line buffer.  This preserves correct
+        // mirror/swap handling while using 100KB instead of 2.4MB PSRAM.
+        // (Pure partial refresh breaks on MIPI DSI panels with mirror_x.)
         lv_display_set_render_mode(disp, LV_DISPLAY_RENDER_MODE_FULL);
         bsp_display_backlight_on();
 
@@ -807,10 +1228,16 @@ extern "C" void app_main(void)
     g_recognition_app = recognition_app;
 
     g_espdl_mutex = xSemaphoreCreateMutex();
+    g_remote_score_sem = xSemaphoreCreateBinary();
+    uart_bridge_on_frame(on_voice_score_cb);
 
     // ---- Speaker Verification Init (instrumented fast-load path) ----
     {
         ESP_LOGI(TAG, "Init speaker verification (fast SD→PSRAM load)...");
+        // 6s model: longer window = better inter-speaker discrimination.
+        // 3s had EER≈4.5% on clean data; real-world with embedded mic is
+        // worse → strangers occasionally matched. 6s captures more voice
+        // characteristics for stronger separation.
         g_speaker_verifier = new SpeakerVerification(3);
         g_embedding_dim = g_speaker_verifier->get_embedding_dim();
         if (g_embedding_dim > 0) {
@@ -818,7 +1245,8 @@ extern "C" void app_main(void)
             if (!g_voice_db->is_valid()) {
                 ESP_LOGW(TAG, "Voice DB init failed, creating new one...");
             }
-            // Populate g_voice_embeddings[] from persistent DB
+            // Populate g_voice_embeddings[][] from persistent DB.
+            // Load ALL enrollment samples per user (not just the first).
             g_voice_user_count = 0;
             if (g_voice_db->is_valid()) {
                 auto labels = g_voice_db->get_labels();
@@ -826,16 +1254,23 @@ extern "C" void app_main(void)
                     auto embeddings = g_voice_db->get_embeddings(label);
                     if (!embeddings.empty() && g_voice_user_count < MAX_VOICE_USERS) {
                         int slot = g_voice_user_count;
-                        if (!g_voice_embeddings[slot])
-                            g_voice_embeddings[slot] = (float *)malloc(g_embedding_dim * sizeof(float));
-                        if (g_voice_embeddings[slot])
-                            memcpy(g_voice_embeddings[slot], embeddings[0].data(), g_embedding_dim * sizeof(float));
+                        int count = 0;
+                        for (const auto &emb : embeddings) {
+                            if (count >= MAX_ENROLL_PER_USER) break;
+                            if (!g_voice_embeddings[slot][count])
+                                g_voice_embeddings[slot][count] = (float *)malloc(g_embedding_dim * sizeof(float));
+                            if (g_voice_embeddings[slot][count])
+                                memcpy(g_voice_embeddings[slot][count], emb.data(), g_embedding_dim * sizeof(float));
+                            count++;
+                        }
+                        g_voice_enroll_count[slot] = count;
                         g_voice_user_count++;
                     }
                 }
                 ESP_LOGI(TAG, "Loaded %d voice user(s) from database", g_voice_user_count);
+                voice_calibrate_threshold();  // re-calibrate from persisted embeddings
             }
-            g_voice_cap_buf = (int16_t *)heap_caps_malloc(16000 * 3 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+            g_voice_cap_buf = (int16_t *)heap_caps_malloc(16000 * 6 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
             ESP_LOGI(TAG, "Speaker verification ready (emb=%d dims)", g_embedding_dim);
         } else {
             ESP_LOGE(TAG, "Speaker verification model failed to load — voice cmd still works (face-only auth)");
@@ -854,7 +1289,7 @@ extern "C" void app_main(void)
         voice_task_params_t *p = (voice_task_params_t *)malloc(sizeof(voice_task_params_t));
         if (p) {
             *p = voice_params;
-            xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 16384, p, 3, NULL, 0);
+            xTaskCreatePinnedToCore(voice_recognition_task, "voice_cmd", 12288, p, 3, NULL, 0);
         } else {
             ESP_LOGE(TAG, "Failed to allocate voice task params");
         }

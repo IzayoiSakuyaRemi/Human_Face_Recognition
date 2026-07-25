@@ -61,7 +61,7 @@ static void radar_display_task(void *arg)
 
     while (1) {
         if (xQueueReceive(s_radar_queue, &msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            ESP_LOGI(TAG, "S3 radar: room=%s move=%s w=%.4f j=%.4f",
+            ESP_LOGD(TAG, "S3 radar: room=%s move=%s w=%.4f j=%.4f",
                      msg.room, msg.move, msg.wander, msg.jitter);
 
             if (g_recognition_app) {
@@ -140,6 +140,6 @@ void radar_display_keep_awake(void)
 void radar_display_init(void)
 {
     s_radar_queue = xQueueCreate(4, sizeof(radar_msg_t));
-    xTaskCreate(radar_display_task, "radar_disp", 3584, NULL, 2, NULL);
+    xTaskCreate(radar_display_task, "radar_disp", 2560, NULL, 2, NULL);
     ESP_LOGI(TAG, "Radar display queue ready (task starts after LVGL init)");
 }

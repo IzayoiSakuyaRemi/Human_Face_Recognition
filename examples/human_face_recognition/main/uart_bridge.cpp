@@ -1,6 +1,7 @@
 #include "uart_bridge.hpp"
 #include "radar_display.hpp"
 #include "xiaozhi/uart_frame_protocol.h"
+#include "csi_liveness.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -239,7 +240,8 @@ static void uart_rx_task(void *arg)
                         float w = json_extract_float(line, "wander");
                         float j = json_extract_float(line, "jitter");
                         radar_display_push(room, move, w, j);
-                        ESP_LOGI(TAG, "S3 radar: %s/%s w=%.4f j=%.4f", room, move, w, j);
+                        csi_liveness_notify_room(room, move);
+                        ESP_LOGD(TAG, "S3 radar: %s/%s w=%.4f j=%.4f", room, move, w, j);
                     }
                     // S3 time sync → set system clock directly (S3 has WiFi + SNTP)
                     if (line[0] == '{' && strstr(line, "\"dev\":\"s3\"") && strstr(line, "\"time\"")) {
@@ -302,6 +304,11 @@ void uart_bridge_init(void)
     xTaskCreatePinnedToCore(uart_tx_task,     "uart_tx",     3072, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(uart_bin_tx_task, "uart_bin_tx", 4096, NULL, 3, NULL, 1);
     xTaskCreatePinnedToCore(uart_rx_task,     "uart_rx",     6144, NULL, 2, NULL, 0);
+
+    // Register CSI liveness callback for ADR-018 frames (0xC5)
+    uart_bridge_on_frame([](uint8_t type, const uint8_t *data, size_t len) {
+        if (type == UART_FRAME_ADR018) csi_liveness_feed(data, len);
+    });
 
     ESP_LOGI(TAG, "UART1 bridge: TX=GPIO%d RX=GPIO%d baud=%d (binary frames enabled)",
              UART_TX_PIN, UART_RX_PIN, UART_BAUD);

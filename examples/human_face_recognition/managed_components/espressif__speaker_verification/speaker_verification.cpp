@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include <math.h>
 
 static const char *TAG = "speaker_verification";
 
@@ -34,7 +35,7 @@ SpeakerVerification::SpeakerVerification(int target_sec) : target_seconds(target
 #if CONFIG_SPEAKER_VERIFICATION_MODEL_IN_FLASH_RODATA
     const char *path = (const char *)(target_seconds == 3 ? sv_model_3s_espdl : sv_model_6s_espdl);
 #else // CONFIG_SPEAKER_VERIFICATION_MODEL_IN_FLASH_PARTITION
-    const char *path = (target_seconds == 3) ? "sv_model_3s" : "sv_model_6s";
+    const char *path = "sv_model_3s";  // partition label (holds 3s or 6s .espdl)
 #endif
     model = new dl::Model(path, static_cast<fbs::model_location_type_t>(CONFIG_SPEAKER_VERIFICATION_MODEL_LOCATION));
 #else
@@ -44,7 +45,7 @@ SpeakerVerification::SpeakerVerification(int target_sec) : target_seconds(target
              "%s/%s/%s",
              CONFIG_BSP_SD_MOUNT_POINT,
              CONFIG_SPEAKER_VERIFICATION_MODEL_SDCARD_DIR,
-             target_seconds == 3 ? "sv_tdnn_tiny_3s.espdl" : "sv_tdnn_tiny_6s.espdl");
+             target_seconds == 3 ? "sv_lite_p4.espdl" : "sv_lite_p4.espdl");
     SV_STEP("pre-load: reading .espdl from SD to PSRAM");
     // FAST PATH: read the whole .espdl into PSRAM ourselves with chunked fread,
     // then hand the memory pointer to dl::Model. Verified reads (see below) guard
@@ -102,7 +103,7 @@ SpeakerVerification::SpeakerVerification(int target_sec) : target_seconds(target
         fclose(f);
         if (got2 != (size_t)fsize) { ESP_LOGW(TAG, "Attempt %d: short read", attempt); continue; }
 
-        bool hdr_ok = (target_seconds != 3) || (memcmp(model_data, expect_hdr, 16) == 0);
+        bool hdr_ok = (target_seconds != 3) || (memcmp(model_data, expect_hdr, 8) == 0);
         uint32_t sum1 = 0;
         for (long i = 0; i < fsize; i++) sum1 += model_data[i];
 
@@ -151,8 +152,11 @@ SpeakerVerification::SpeakerVerification(int target_sec) : target_seconds(target
     config.window_type = dl::audio::WinType::HAMMING;
     config.use_energy = false;
     config.use_log_fbank = 1;
-    config.low_freq = 20.0f;
+    config.low_freq = 0.0f;
     config.high_freq = 0.0f;
+    // ── Match TinyModel training (torchaudio MelSpectrogram) ──
+    config.preemphasis = 0.0f;
+    config.remove_dc_offset = false;
 
     SV_STEP("Fbank construct start");
     fbank = new dl::audio::Fbank(config);
@@ -182,11 +186,16 @@ SpeakerVerification::~SpeakerVerification()
 
 void SpeakerVerification::normalize_audio(const int16_t *src, int src_len)
 {
-    // Center-crop if too long, right-pad with zeros if too short, and scale int16 -> [-1, 1).
+    // RIGHT-aligned crop: the ring buffer captures audio from oldest to newest.
+    // The user's speech is at the END of the buffer (most recent) — taking the
+    // first part captures silence or incomplete speech, causing inconsistent
+    // embeddings for the same person. Training used random crops so the model
+    // is robust to offset; inference must use the most recent speech.
+    // Right-pad with zeros if too short, and scale int16 -> [-1, 1).
     if (src_len < target_samples) {
         for (int i = 0; i < target_samples; i++) audio_buffer[i] = (i < src_len) ? src[i] / 32768.0f : 0.0f;
     } else {
-        int start = (src_len - target_samples) / 2;
+        int start = src_len - target_samples;  // take the LAST target_samples
         for (int i = 0; i < target_samples; i++) audio_buffer[i] = src[start + i] / 32768.0f;
     }
 }
@@ -223,7 +232,9 @@ void SpeakerVerification::extract_features()
     auto input_tensor = model->get_inputs().begin()->second;
     fbank->process(audio_buffer, target_samples, features_buffer);
 
-    // CMVN (only subtract mean)
+    // CMVN: mean-only subtraction (matching training featurizer.py).
+    // Training uses: feature = feature - feature.mean(1, keepdim=True)
+    // NO variance normalization — training does NOT divide by std.
     for (int d = 0; d < feature_dim; d++) {
         float mean = 0.0f;
         for (int t = 0; t < num_frames; t++) mean += features_buffer[t * feature_dim + d];
@@ -250,7 +261,14 @@ float *SpeakerVerification::run_model()
     }
 
     int8_t *ptr = (int8_t *)output_tensor->data;
-    for (int i = 0; i < embedding_dim; i++) embedding[i] = dl::dequantize(ptr[i], DL_SCALE(output_tensor->exponent));
+    float l2 = 0.0f;
+    for (int i = 0; i < embedding_dim; i++) {
+        embedding[i] = dl::dequantize(ptr[i], DL_SCALE(output_tensor->exponent));
+        l2 += embedding[i] * embedding[i];
+    }
+    l2 = sqrtf(l2);
+    if (l2 < 1e-10f) l2 = 1e-10f;
+    for (int i = 0; i < embedding_dim; i++) embedding[i] /= l2;
 
     return embedding;
 }

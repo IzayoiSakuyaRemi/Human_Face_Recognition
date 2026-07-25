@@ -15,6 +15,7 @@ static void wifi_provisioning_start_async(void (*)(const char*, bool)) {}
 #include "human_face_recognition.hpp"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_mac.h"
 #include <dirent.h>
 #include <sys/stat.h>
@@ -173,6 +174,30 @@ void SettingsApp::create_main_page()
     auto *btn5 = menu_row_create(m_main_page, "Radar Training", 380);
     lv_obj_add_event_cb(btn5, [](lv_event_t *e) {
         ((SettingsApp *)lv_event_get_user_data(e))->create_radar_page();
+    }, LV_EVENT_CLICKED, this);
+
+    // Reset Voiceprints — button because voice cmd 8 ("qing chu sheng wen")
+    // is a MultiNet blind spot and never gets recognized.
+    extern int voice_db_reset(void);
+    auto *btn6 = menu_row_create(m_main_page, "Reset Voiceprints", 420);
+    lv_obj_add_event_cb(btn6, [](lv_event_t *e) {
+        static bool awaiting = false;
+        static int64_t first_tap_us = 0;
+        lv_obj_t *btn = lv_event_get_target_obj(e);
+        lv_obj_t *label = lv_obj_get_child(btn, 0);
+        int64_t now = esp_timer_get_time();
+        if (!awaiting || (now - first_tap_us) > 3000000) {
+            // First tap (or previous confirm expired after 3s)
+            awaiting = true;
+            first_tap_us = now;
+            lv_label_set_text(label, "Tap again to reset");
+        } else {
+            awaiting = false;
+            int n = voice_db_reset();
+            char buf[48];
+            snprintf(buf, sizeof(buf), "Reset done (%d cleared)", n);
+            lv_label_set_text(label, buf);
+        }
     }, LV_EVENT_CLICKED, this);
 }
 

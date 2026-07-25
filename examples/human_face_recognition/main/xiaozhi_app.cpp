@@ -150,6 +150,10 @@ bool XiaoZhiApp::run()
     uint8_t f[4] = {UART_FRAME_CTRL, CTRL_ENTER_XIAOZHI, 0, 0};
     uart_bridge_send_frame(UART_FRAME_CTRL, f, 4);
 
+    // Disable remote voice verification during xiaozhi mode
+    extern bool g_voice_remote_mode;
+    g_voice_remote_mode = false;
+
     // Start mic → UART pipeline
     xiaozhi_audio_bridge_start();
 
@@ -197,6 +201,10 @@ bool XiaoZhiApp::close()
     /* ── Drain message queue ────────────────── */
     xz_msg_t dummy;
     while (xQueueReceive(m_msg_queue, &dummy, 0) == pdTRUE) {}
+
+    // Re-enable remote voice verification
+    extern bool g_voice_remote_mode;
+    g_voice_remote_mode = true;
 
     ESP_LOGI(TAG, "XiaoZhi app closed");
     return true;

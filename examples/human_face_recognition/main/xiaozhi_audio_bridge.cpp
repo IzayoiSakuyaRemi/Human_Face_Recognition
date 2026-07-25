@@ -185,7 +185,7 @@ void xiaozhi_audio_bridge_start(void)
     uart_bridge_on_frame(on_pcm_down_frame);
 
     BaseType_t ret = xTaskCreatePinnedToCore(mic_capture_task, "xz_mic",
-        8192, NULL, 3, &s_mic_task, 1);
+        6144, NULL, 3, &s_mic_task, 1);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create xz_mic task!");
         s_running = false;

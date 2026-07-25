@@ -23,10 +23,12 @@ if (NOT CONFIG_SPEAKER_VERIFICATION_MODEL_IN_SDCARD)
         target_add_aligned_binary_data(${COMPONENT_LIB} ${model_file_6s} BINARY)
     endif()
     if(CONFIG_SPEAKER_VERIFICATION_MODEL_IN_FLASH_PARTITION)
-        # Only the 3s model is used (flash space: 6s model would need another 2.8MB partition)
-        add_custom_target(SPEAKER_VERIFICATION_MODEL ALL DEPENDS ${model_file_3s})
+        # Flash the 6s model (better inter-speaker discrimination than 3s).
+        # Both .espdl files are identical size; partition label "sv_model_3s"
+        # is reused — rename it if you switch back to the 3s model.
+        add_custom_target(SPEAKER_VERIFICATION_MODEL ALL DEPENDS ${model_file_6s})
         add_dependencies(flash SPEAKER_VERIFICATION_MODEL)
-        esptool_py_flash_to_partition(flash "sv_model_3s" ${model_file_3s})
+        esptool_py_flash_to_partition(flash "sv_model_3s" ${models_dir}/sv_lite_p4.espdl)
     endif()
 
 endif()
